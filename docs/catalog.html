@@ -1,0 +1,448 @@
+<title>Каталог MyRpg</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kurale&family=PT+Sans:wght@400;700&family=PT+Mono&display=swap">
+<style>
+  /* Layout: справочник-ведомость — слева оглавление разделов, справа одна страница-раздел с таблицами; на телефоне оглавление — полоса вкладок сверху. */
+  :root {
+    --bg: #f6f3ee;
+    --surface: #fffdf9;
+    --fg: #241f1a;
+    --muted: #6e6458;
+    --line: #ddd4c7;
+    --accent: #8a3b1f;
+    --accent-soft: #f1e2d8;
+    --good: #2f6b2a;
+    --bad: #a3302a;
+    --chip: #ece5da;
+    --cat-weapon: #b56e5a;
+    --cat-amulet: #8a6fb0;
+    --cat-alchemy: #4f8f74;
+    --cat-food: #b39a4c;
+    --font-display: 'Kurale', 'PT Serif', Georgia, serif;
+    --font-body: 'PT Sans', 'Segoe UI', Arial, sans-serif;
+    --font-mono: 'PT Mono', 'Consolas', monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17141a; --surface: #201c24; --fg: #ece6d6; --muted: #a39aab; --line: #3a3442;
+      --accent: #e0b65a; --accent-soft: #3a3020; --good: #7fd47f; --bad: #e06a60; --chip: #2c2733;
+      --cat-weapon: #a86a58; --cat-amulet: #8d75b5; --cat-alchemy: #4f9a7c; --cat-food: #b8a058;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17141a; --surface: #201c24; --fg: #ece6d6; --muted: #a39aab; --line: #3a3442;
+    --accent: #e0b65a; --accent-soft: #3a3020; --good: #7fd47f; --bad: #e06a60; --chip: #2c2733;
+    --cat-weapon: #a86a58; --cat-amulet: #8d75b5; --cat-alchemy: #4f9a7c; --cat-food: #b8a058;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 16px; line-height: 1.5;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 24px 48px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 32px; align-items: start; }
+  header.top { max-width: 1180px; margin: 0 auto 24px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  header.top h1 { font-family: var(--font-display); font-weight: 400; font-size: 34px; margin: 0; text-wrap: balance; }
+  header.top p { margin: 0; color: var(--muted); }
+
+  nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); display: flex; flex-direction: column; gap: 2px; }
+  nav.toc a {
+    display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: 6px;
+    color: var(--fg); text-decoration: none; font-weight: 700; font-size: 15px;
+  }
+  nav.toc a span.n { font-family: var(--font-mono); font-weight: 400; color: var(--muted); font-size: 13px; }
+  nav.toc a:hover { background: var(--chip); }
+  nav.toc a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+  nav.toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  main { min-width: 0; }
+  section.page { display: grid; gap: 20px; }
+  section.page h2 { font-family: var(--font-display); font-weight: 400; font-size: 30px; margin: 0; text-wrap: balance; }
+  section.page h3 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 0; }
+  .lead { margin: 0; max-width: 68ch; color: var(--muted); }
+  p { margin: 0; max-width: 72ch; }
+
+  .table-box { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; white-space: nowrap; background: var(--bg); }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td code, p code, li code { font-family: var(--font-mono); font-size: 13px; background: var(--chip); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  td .name { font-weight: 700; }
+  td .id { display: block; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .dim { color: var(--muted); }
+
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 13px; background: var(--chip); white-space: nowrap; }
+  .cat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .cat::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--c); }
+  .state-off { color: var(--bad); font-weight: 700; }
+  .state-on { color: var(--good); font-weight: 700; }
+
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .fact { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px 14px; display: grid; gap: 2px; }
+  .fact b { font-family: var(--font-mono); font-size: 24px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .fact span { color: var(--muted); font-size: 14px; }
+
+  .grid-pic { display: inline-grid; gap: 3px; padding: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  .grid-pic div { width: 46px; height: 46px; border-radius: 4px; background: var(--chip); display: grid; place-items: center; font-size: 11px; text-align: center; line-height: 1.1; padding: 2px; color: #fff; }
+  .grid-pic .fork { background: #7a4a3a; }
+  .grid-pic .pie { background: #6b5536; }
+  .row { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+  .row > * { min-width: 0; }
+  ul.plain { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 72ch; }
+
+  @media (max-width: 760px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    nav.toc { position: static; flex-direction: row; overflow-x: auto; gap: 4px; padding-bottom: 4px; }
+    nav.toc a { white-space: nowrap; }
+    nav.toc a span.n { display: none; }
+    header.top h1 { font-size: 28px; }
+  }
+  @media (prefers-reduced-motion: no-preference) { nav.toc a { transition: background .12s; } }
+</style>
+
+<header class="top">
+  <h1>Каталог MyRpg</h1>
+  <p>Всё, что сейчас есть в прототипе: предметы, враги, правила и числа. Снято с кода 20.11.2026.</p>
+</header>
+
+<div class="wrap">
+  <nav class="toc" aria-label="Разделы">
+    <a href="#overview">Обзор</a>
+    <a href="#items">Предметы героя <span class="n">4</span></a>
+    <a href="#enemies">Враги <span class="n">1</span></a>
+    <a href="#enemy-items">Предметы врагов <span class="n">2</span></a>
+    <a href="#synergy">Соседство <span class="n">2</span></a>
+    <a href="#modifiers">Модификаторы врагов <span class="n">1</span></a>
+    <a href="#tags">Теги и категории</a>
+    <a href="#battle">Бой и парирование</a>
+    <a href="#inventory">Инвентарь</a>
+    <a href="#rules">Формулы и правила</a>
+  </nav>
+
+  <main>
+    <!-- ─── Обзор ─── -->
+    <section class="page" id="overview" data-page>
+      <h2>Обзор</h2>
+      <p class="lead">Прототип на ядре боя Людъмака: инвентарь-сетка с соседством предметов, автобой и парирование в реальном времени. Наполнение урезано до минимума — это шаблон под новый контент.</p>
+      <div class="facts">
+        <div class="fact"><b>4</b><span>предмета героя</span></div>
+        <div class="fact"><b>1</b><span>враг, 2 его предмета</span></div>
+        <div class="fact"><b>2</b><span>правила соседства</span></div>
+        <div class="fact"><b>1</b><span>модификатор врага</span></div>
+        <div class="fact"><b>5×5</b><span>инвентарь, 25 клеток</span></div>
+        <div class="fact"><b>200</b><span>здоровье героя</span></div>
+      </div>
+      <h3>Экраны</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Экран</th><th>Что на нём</th><th>Управление</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Главный</td><td>Инвентарь 5×5; панель «Сила снаряжения» или описание предмета под курсором; выдача любого предмета героя; выбор врага с его портретом, здоровьем и сумкой; кнопка «В бой».</td><td>ЛКМ — тащить предмет, ПКМ — повернуть, за сетку — выбросить, двойной клик по оружию — основное.</td></tr>
+          <tr><td class="name">Бой</td><td>Слева герой и его инвентарь, справа портрет врага и его сумка, между ними поле атак. Внизу справа журнал. В конце — «Ещё раз» или «На главный».</td><td>ПКМ по кружку в поле атак — парировать. ЛКМ по активному предмету — применить. Кнопка «Ускорение ×1/×2».</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Есть в данных, но в игре не используется</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Что</th><th>Где</th><th>Почему</th></tr></thead>
+        <tbody>
+          <tr><td>Модификатор «Пьяный»</td><td><code>data/modifiers.ts</code>, <code>battle.ts</code></td><td>В логике боя работает, но бой всегда идёт без модификатора.</td></tr>
+          <tr><td>Цена предметов</td><td><code>ITEM_STATS.price</code></td><td>Магазина нет.</td></tr>
+          <tr><td>Редкость предметов</td><td><code>ItemDef.tier</code></td><td>Магазина нет.</td></tr>
+          <tr><td>Виды эффектов соседства без правил</td><td><code>data/synergies.ts</code></td><td>Отключение, отравление, взрыв, замедление, усиление ауры — движок умеет, правил под них нет.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ─── Предметы героя ─── -->
+    <section class="page" id="items" data-page hidden>
+      <h2>Предметы героя</h2>
+      <p class="lead">Числа — за одно срабатывание. Бой дробный: остаток переносится на следующее срабатывание того же предмета, так что 4.5 — это удары по 4 и 5. Новый предмет — запись в <code>data/items.ts</code> и числа в <code>ITEM_STATS</code>.</p>
+      <div class="table-box"><table>
+        <thead><tr><th>Предмет</th><th>Категория</th><th>Режим</th><th>Теги</th><th class="num">Размер</th><th class="num">Перезарядка</th><th>Эффект</th><th class="num">Заряды</th><th>Парирование</th><th class="num">Цена</th><th class="num">Редкость</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">Стальной меч</span><span class="id">steel_sword</span></td><td><span class="cat" style="--c: var(--cat-weapon)">Оружие</span></td><td>пассивный</td><td class="dim">—</td><td class="num">1×3</td><td class="num">1.5 с</td><td>урон 20</td><td class="num dim">—</td><td>основное оружие: отбитый удар слабее на 50%</td><td class="num">7</td><td class="num">1</td></tr>
+          <tr><td><span class="name">Краюха хлеба</span><span class="id">bread</span></td><td><span class="cat" style="--c: var(--cat-food)">Еда</span></td><td>пассивный</td><td><span class="chip">Лечение</span></td><td class="num">1×1</td><td class="num">4.0 с</td><td>лечение 10</td><td class="num">3</td><td class="dim">—</td><td class="num">4</td><td class="num">1</td></tr>
+          <tr><td><span class="name">Лечебный эликсир</span><span class="id">healing_elixir</span></td><td><span class="cat" style="--c: var(--cat-alchemy)">Алхимия</span></td><td>активный</td><td><span class="chip">Эликсир</span></td><td class="num">1×1</td><td class="num dim">—</td><td>лечение 60</td><td class="num">1</td><td class="dim">—</td><td class="num">14</td><td class="num">2</td></tr>
+          <tr><td><span class="name">Точильный камень</span><span class="id">whetstone</span></td><td><span class="cat" style="--c: var(--cat-amulet)">Амулет</span></td><td>пассивный</td><td class="dim">—</td><td class="num">1×1</td><td class="num dim">—</td><td>своего действия нет; аура: соседнее Оружие +10% урона</td><td class="num dim">—</td><td class="dim">—</td><td class="num">6</td><td class="num">1</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Старт</h3>
+      <p>В начале в инвентаре стальной меч, он же основное оружие (<code>START_ITEMS</code>).</p>
+    </section>
+
+    <!-- ─── Враги ─── -->
+    <section class="page" id="enemies" data-page hidden>
+      <h2>Враги</h2>
+      <p class="lead">Здоровье и урон врага умножаются на силу врагов ×1.2 (<code>ENEMY_STAT_MULT</code>). Новый враг — запись в <code>data/enemies.ts</code>, здоровье в <code>ENEMY_STATS</code> и по желанию портрет <code>portraits/enemies/{id}.webp</code>.</p>
+      <div class="table-box"><table>
+        <thead><tr><th>Враг</th><th class="num">Здоровье (база)</th><th class="num">В бою</th><th class="num">Сумка</th><th>Состав сумки</th><th>Как воюет</th><th>Портрет</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">Крестьянин с вилами</span><span class="id">krestyanin</span></td><td class="num">223</td><td class="num">268</td><td class="num">2×3</td><td>Вилы ×1, Коровья лепёшка ×3</td><td>Сначала бросает три лепёшки (раз в 1.5 с), потом бьёт вилами раз в 2 с до конца боя.</td><td>есть</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Раскладка сумки крестьянина</h3>
+      <div class="row">
+        <div class="grid-pic" style="grid-template-columns: repeat(2, 46px); grid-template-rows: repeat(3, 46px);" role="img" aria-label="Сумка 2×3: слева вилы на всю высоту, справа три лепёшки друг под другом">
+          <div class="fork" style="grid-row: 1 / 4; height: auto;">Вилы</div>
+          <div class="pie">Лепёшка</div>
+          <div class="pie">Лепёшка</div>
+          <div class="pie">Лепёшка</div>
+        </div>
+        <p class="dim">Раскладка на порядок ударов не влияет: враг берёт предмет по приоритету (меньше — раньше) среди тех, у которых остались заряды. Соседство в сумке врага не считается.</p>
+      </div>
+    </section>
+
+    <!-- ─── Предметы врагов ─── -->
+    <section class="page" id="enemy-items" data-page hidden>
+      <h2>Предметы врагов</h2>
+      <p class="lead">Каждый удар врага летит кружком на поле атак и приходит через 0.5 с, если его не отбить. Урон в таблице — уже с силой врагов ×1.2. Новый предмет — запись в <code>data/enemyItems.ts</code> и числа в <code>ENEMY_ITEM_STATS</code>.</p>
+      <div class="table-box"><table>
+        <thead><tr><th>Предмет</th><th>Категория</th><th class="num">Размер</th><th class="num">Приоритет</th><th class="num">Замах</th><th class="num">Урон (база)</th><th class="num">Урон</th><th class="num">Отбит</th><th class="num">Заряды</th><th>Особое</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">Коровья лепёшка</span><span class="id">cow_pie</span></td><td>Снаряд</td><td class="num">1×1</td><td class="num">1</td><td class="num">1.5 с</td><td class="num">15</td><td class="num">18</td><td class="num">9</td><td class="num">1</td><td>Пропущенная оставляет пятно на поле и на герое (только вид).</td></tr>
+          <tr><td><span class="name">Вилы</span><span class="id">pitchfork</span></td><td>Оружие</td><td class="num">1×3</td><td class="num">9</td><td class="num">2.0 с</td><td class="num">7.5</td><td class="num">9</td><td class="num">4–5</td><td class="num dim">∞</td><td class="dim">—</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ─── Соседство ─── -->
+    <section class="page" id="synergy" data-page hidden>
+      <h2>Соседство</h2>
+      <p class="lead">Соседи — предметы, которые касаются друг друга стороной клетки (без диагоналей). Правило: «источник» действует на соседа-«цель», пара проверяется в обе стороны. Новое правило — одна запись в <code>data/synergies.ts</code> и число в <code>SYNERGY</code>.</p>
+      <h3>Правила</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Правило</th><th>Источник</th><th>Цель</th><th>Вид</th><th>Эффект</th><th>Пример</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">Алхимия к оружию</span><span class="id">alchemy_weapon</span></td><td>категория Алхимия</td><td>категория Оружие</td><td><code>boost</code> урон</td><td class="state-on">+25% урона</td><td>Эликсир рядом с мечом: урон меча 20 → 25. Эликсир выпит — бонус пропадает.</td></tr>
+          <tr><td><span class="name">Аура точильного камня</span><span class="id">whetstone_aura</span></td><td>предмет Точильный камень</td><td>категория Оружие</td><td><code>boost</code> урон, аура</td><td class="state-on">+10% урона</td><td>Камень и эликсир у меча вместе: 20 × 1.35 = 27. Два камня у меча дают один бонус.</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Виды эффектов, которые умеет движок</h3>
+      <p>Можно использовать в новых правилах без правки логики.</p>
+      <div class="table-box"><table>
+        <thead><tr><th>Вид</th><th>Что делает</th><th>Правил сейчас</th></tr></thead>
+        <tbody>
+          <tr><td><code>boost</code></td><td>Прибавка к характеристике цели в долях (0.25 = +25%, −0.5 = −50%). <code>damage</code> — только урон, <code>all</code> — урон и лечение. С <code>aura</code> прибавка умножается на силу ауры источника.</td><td class="num">2</td></tr>
+          <tr><td><code>auraBoost</code></td><td>Усиливает ауру цели-амулета (+доля к силе ауры). Источник, который сам даёт ауру, усиливать ауру не может: аура не усиливает ауру.</td><td class="num">0</td></tr>
+          <tr><td><code>disable</code></td><td>Цель отключена: не срабатывает и ни на кого не влияет. Сильнее любых бонусов.</td><td class="num">0</td></tr>
+          <tr><td><code>poison</code></td><td>Лечение цели превращается в урон по герою.</td><td class="num">0</td></tr>
+          <tr><td><code>explode</code></td><td>С шансом цель взрывается в начале боя: урон герою, все заряды теряются, предмет исчезает.</td><td class="num">0</td></tr>
+          <tr><td><code>slow</code></td><td>Цель бьёт реже: к перезарядке + секунды (складывается от каждого соседа).</td><td class="num">0</td></tr>
+          <tr><td><code>BlockRule</code></td><td>Внешний запрет (не соседство): предмет отключён с причиной в подсказке. Передаётся в расчёт отдельно.</td><td class="num dim">—</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Порядок расчёта</h3>
+      <ul class="plain">
+        <li>Сначала отключения: отключённый предмет дальше ни на кого не влияет.</li>
+        <li>Потом отравление, взрыв и усиление аур.</li>
+        <li>Потом прибавки — «увеличение»: одно правило от нескольких соседей не складывается (работает сильнейший источник); положительных бонусов действует не больше трёх сильнейших; их сумма проходит через кап; штрафы действуют все. Итог = база × (1 + кап(сумма плюсов) + сумма минусов), не ниже 0.</li>
+        <li>В конце замедление: к перезарядке прибавляется сумма от всех соседей; перезарядка выравнивается по тику 0.1 с и не бывает меньше 0.5 с.</li>
+        <li>Бонус считается за предмет-соседа, а не за клетку касания: предмет 2×2 не собирает больше, чем 1×1.</li>
+        <li>Бонус, который не действует по правилам стака, виден в подсказке с причиной и не считается в метках.</li>
+        <li>Когда предмет исчезает в бою, соседство пересчитывается сразу.</li>
+      </ul>
+    </section>
+
+    <!-- ─── Модификаторы ─── -->
+    <section class="page" id="modifiers" data-page hidden>
+      <h2>Модификаторы врагов</h2>
+      <p class="lead">Модификатор добавляет врагу приставку к имени и меняет его поведение в бою. У врага не больше одного модификатора. Числа — <code>MODIFIER_STATS</code>.</p>
+      <div class="table-box"><table>
+        <thead><tr><th>Модификатор</th><th>Имя врага</th><th>Описание</th><th class="num">Урон врага</th><th class="num">Шанс промаха</th><th>Пример</th><th>В игре</th></tr></thead>
+        <tbody>
+          <tr><td><span class="name">Пьяный</span><span class="id">drunk</span></td><td>«Пьяный крестьянин с вилами»</td><td>Урон его предметов +50%; каждый удар (в том числе отбитый) с шансом 25% промахивается — урона нет.</td><td class="num">+50%</td><td class="num">25%</td><td>Лепёшка 27 (отбита 13–14), вилы 13–14 (отбиты 6–7).</td><td class="state-off">не выдаётся</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ─── Теги и категории ─── -->
+    <section class="page" id="tags" data-page hidden>
+      <h2>Теги и категории</h2>
+      <p class="lead">По ним правила соседства выбирают источник и цель. Категория у предмета одна, тегов может быть несколько.</p>
+      <h3>Категории предметов героя</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Категория</th><th>Предметы</th><th>Участвует в правилах</th></tr></thead>
+        <tbody>
+          <tr><td><span class="cat" style="--c: var(--cat-weapon)">Оружие</span> <span class="id">weapon</span></td><td>Стальной меч</td><td>цель «Алхимия к оружию» и ауры камня</td></tr>
+          <tr><td><span class="cat" style="--c: var(--cat-amulet)">Амулет</span> <span class="id">amulet</span></td><td>Точильный камень</td><td class="dim">—</td></tr>
+          <tr><td><span class="cat" style="--c: var(--cat-alchemy)">Алхимия</span> <span class="id">alchemy</span></td><td>Лечебный эликсир</td><td>источник «Алхимия к оружию»</td></tr>
+          <tr><td><span class="cat" style="--c: var(--cat-food)">Еда</span> <span class="id">food</span></td><td>Краюха хлеба</td><td class="dim">—</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Теги</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Тег</th><th>Предметы</th><th>Участвует в правилах</th></tr></thead>
+        <tbody>
+          <tr><td><span class="chip">Лечение</span> <span class="id">heal</span></td><td>Краюха хлеба</td><td class="dim">—</td></tr>
+          <tr><td><span class="chip">Эликсир</span> <span class="id">elixir</span></td><td>Лечебный эликсир</td><td class="dim">—</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Категории предметов врагов</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Категория</th><th>Предметы</th></tr></thead>
+        <tbody>
+          <tr><td>Оружие <span class="id">weapon</span></td><td>Вилы</td></tr>
+          <tr><td>Снаряд <span class="id">throw</span></td><td>Коровья лепёшка</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ─── Бой ─── -->
+    <section class="page" id="battle" data-page hidden>
+      <h2>Бой и парирование</h2>
+      <p class="lead">Автобой с одним врагом. Предметы героя срабатывают сами, враг копит замах и бьёт; удар врага можно отбить правой кнопкой основным оружием.</p>
+      <h3>Числа боя</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Параметр</th><th class="num">Значение</th><th>Где</th></tr></thead>
+        <tbody>
+          <tr><td>Здоровье героя</td><td class="num">200</td><td><code>HERO_HP</code></td></tr>
+          <tr><td>Сила врагов (здоровье и урон)</td><td class="num">×1.2</td><td><code>ENEMY_STAT_MULT</code></td></tr>
+          <tr><td>Урон отбитого удара</td><td class="num">×0.5</td><td><code>PARRY_DAMAGE_MULT</code></td></tr>
+          <tr><td>Окно парирования (реальное время)</td><td class="num">0.5 с</td><td><code>FEEL.parry.window</code></td></tr>
+          <tr><td>Ускорение боя</td><td class="num">×2</td><td><code>BATTLE_FAST_SPEED</code></td></tr>
+          <tr><td>Тик боя</td><td class="num">0.1 с</td><td><code>BATTLE_TICK</code></td></tr>
+          <tr><td>Минимальная перезарядка</td><td class="num">0.5 с</td><td><code>MIN_COOLDOWN</code></td></tr>
+          <tr><td>Затяжной бой: с какой секунды</td><td class="num">60 с</td><td><code>FATIGUE.startSec</code></td></tr>
+          <tr><td>Затяжной бой: прибавка к урону врага</td><td class="num">+10% / 5 с</td><td><code>FATIGUE</code></td></tr>
+        </tbody>
+      </table></div>
+      <h3>Как идёт бой</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Сторона</th><th>Правило</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Герой, пассивные</td><td>Срабатывают сами по перезарядке. Предмет с зарядами (хлеб) тратит заряд на каждое срабатывание.</td></tr>
+          <tr><td class="name">Герой, активные</td><td>Срабатывают по клику ЛКМ в инвентаре, тратят заряд.</td></tr>
+          <tr><td class="name">Расходники</td><td>Тратятся навсегда: кончились заряды — предмет исчезает из инвентаря и после боя.</td></tr>
+          <tr><td class="name">Враг</td><td>Одно действие за раз: копит замах до перезарядки первого предмета с зарядами (по приоритету), бьёт, таймер обнуляется.</td></tr>
+          <tr><td class="name">Удар врага</td><td>Не приходит сразу: кружок появляется в случайной точке поля атак, растёт 0.5 с, кольцо стягивается. Дорос — удар.</td></tr>
+          <tr><td class="name">Затяжной бой</td><td>После 60-й секунды урон врага растёт на 10% от базы каждые 5 секунд (на 65-й +10%, на 70-й +20%…). Под полоской врага — надпись с текущей прибавкой.</td></tr>
+          <tr><td class="name">Конец боя</td><td>Здоровье врага 0 — победа (удары в полёте отменяются). Здоровье героя 0 — поражение.</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Парирование</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Что</th><th>Как</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Основное оружие</td><td>Предмет с перком парирования, выбирается двойным кликом в инвентаре. Сейчас таких один — стальной меч. Нет основного или оно отключено — парировать нельзя.</td></tr>
+          <tr><td class="name">Курсор</td><td>В поле атак курсор — клинок основного оружия: отрезок от кончика (точка курсора) до конца лезвия, наклон −40°. Числа — <code>PARRY_CURSOR.weapons</code>.</td></tr>
+          <tr><td class="name">Попадание</td><td>ПКМ: кружок отбит, если его кольцо касается отрезка лезвия. Задеты несколько — отбивается ближайший к курсору. Ранний клик не наказывается.</td></tr>
+          <tr><td class="name">Отбитый удар</td><td>Приходит сразу с уроном ×0.5.</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Виды атак врага</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Вид</th><th>Как выглядит</th><th>Кто использует</th></tr></thead>
+        <tbody>
+          <tr><td><code>hit</code></td><td>Обычный удар: кружок на месте, растёт за окно парирования.</td><td>Вилы, Коровья лепёшка</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Перки парирования</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Перк</th><th>Эффект</th><th>У кого</th></tr></thead>
+        <tbody>
+          <tr><td><code>sword</code></td><td>Отбитый удар слабее на 50%, особого эффекта нет.</td><td>Стальной меч</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- ─── Инвентарь ─── -->
+    <section class="page" id="inventory" data-page hidden>
+      <h2>Инвентарь</h2>
+      <p class="lead">Сетка 5×5 без дыр (<code>BACKPACK_MASK</code>). Предмет занимает прямоугольник своего размера, повёрнутый — с переставленными шириной и высотой. Соседство считается только для лежащих в сетке.</p>
+      <h3>Действия</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Действие</th><th>Как</th><th>Что происходит</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Выдать предмет</td><td>Кнопка предмета на главном экране</td><td>Ложится в первое свободное место (сначала без поворота). Места нет — сообщение.</td></tr>
+          <tr><td class="name">Переложить</td><td>ЛКМ, тащить</td><td>Подсветка места: зелёная — помещается, красная — нет.</td></tr>
+          <tr><td class="name">Повернуть</td><td>ПКМ по предмету или во время перетаскивания</td><td>Не помещается повёрнутым — предмет мигает красным.</td></tr>
+          <tr><td class="name">Выбросить</td><td>Отпустить за пределами сетки</td><td>Предмет удаляется.</td></tr>
+          <tr><td class="name">Основное оружие</td><td>Двойной клик</td><td>Только для предмета с перком парирования; золотая рамка.</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Метки на предметах</h3>
+      <ul class="plain">
+        <li>Зелёный кружок с числом — сколько полезных эффектов соседства получил предмет, красный — сколько вредных.</li>
+        <li>Остаток зарядов — в правом нижнем углу.</li>
+        <li>Отключённый предмет серый. В бою пассивный предмет затемнён по перезарядке, активный в светлой рамке, пока его можно нажать.</li>
+      </ul>
+    </section>
+    <!-- ─── Формулы и правила ─── -->
+    <section class="page" id="rules" data-page hidden>
+      <h2>Формулы и правила</h2>
+      <p class="lead">Основы, по которым считается бой. Взяты из гайда по балансу (<code>docs/balance-guide.md</code>); номера в скобках — разделы гайда.</p>
+      <h3>Числа и округление (1.1)</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Правило</th><th>Как сейчас</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Шкала</td><td>Урон оружия не ниже 20, здоровье героя не ниже 200 — стоим ровно на границе: меч 20, герой 200. Числа делятся на две пары, каждая масштабирована от джема отдельно: «длительность» (урон героя, здоровье врагов) ×10/3, «опасность» (урон врагов, здоровье героя, лечение) ×1.25. Длительность и опасность боя — как в джеме.</td></tr>
+          <tr><td class="name">Дробный бой</td><td>Урон и лечение считаются дробными. Округление вниз — только при списании здоровья, остаток переносится на следующее срабатывание того же предмета: отбитые вилы (4.5) бьют 4, 5, 4, 5… — в среднем ровно 4.5.</td></tr>
+          <tr><td class="name">Подсказки</td><td>Показывают, что реально выйдет: «урон 4–5», а не «4.5».</td></tr>
+        </tbody>
+      </table></div>
+      <h3>Формула характеристики (1.2)</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Часть</th><th>Что туда идёт</th><th>Сейчас</th></tr></thead>
+        <tbody>
+          <tr><td><code>база</code></td><td>Число предмета из <code>ITEM_STATS</code>.</td><td>есть</td></tr>
+          <tr><td><code>+ плоские</code></td><td>Плоские прибавки от самого предмета.</td><td class="dim">нет</td></tr>
+          <tr><td><code>× (1 + Σ увеличение)</code></td><td>Все бонусы соседства складываются в одну сумму.</td><td>есть, через правила стака и кап</td></tr>
+          <tr><td><code>× Π (1 + множитель)</code></td><td>Редкие поштучные множители, перемножаются.</td><td class="dim">нет</td></tr>
+        </tbody>
+      </table></div>
+      <p>Каждый новый вид бонуса обязан попасть в одну из этих трёх частей.</p>
+      <h3>Стак соседства (2.1)</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Правило</th><th class="num">Число</th><th>Где</th></tr></thead>
+        <tbody>
+          <tr><td>Бонус — за предмет-соседа, не за клетку касания</td><td class="num dim">—</td><td><code>adjacency</code></td></tr>
+          <tr><td>Одно правило от нескольких соседей не складывается — работает сильнейший источник</td><td class="num dim">—</td><td><code>synergy.ts</code></td></tr>
+          <tr><td>Положительных бонусов на предмете действует не больше</td><td class="num">3</td><td><code>SYNERGY_STACK.maxAuras</code></td></tr>
+          <tr><td>Аура не усиливает ауру</td><td class="num dim">—</td><td><code>synergy.ts</code></td></tr>
+          <tr><td>Кап: сумма плюсов до 100% — полностью</td><td class="num">100%</td><td><code>SYNERGY_STACK.capSoft</code></td></tr>
+          <tr><td>Кап: сверх 100% идёт с долей</td><td class="num">50%</td><td><code>SYNERGY_STACK.overShare</code></td></tr>
+          <tr><td>Кап: жёсткий потолок</td><td class="num">200%</td><td><code>SYNERGY_STACK.capHard</code></td></tr>
+        </tbody>
+      </table></div>
+      <p class="dim">Пример капа: сумма 160% превращается в 100% + 0.5 × 60% = 130%. С нынешними предметами больше 41% не набрать, кап — страховка на будущее.</p>
+      <h3>Время (1.3, 2.6)</h3>
+      <div class="table-box"><table>
+        <thead><tr><th>Правило</th><th class="num">Число</th><th>Где</th></tr></thead>
+        <tbody>
+          <tr><td>Логика боя идёт фиксированным тиком; кружки атак рисуются плавно между тиками</td><td class="num">0.1 с</td><td><code>BATTLE_TICK</code></td></tr>
+          <tr><td>Перезарядка кратна тику и не меньше</td><td class="num">0.5 с</td><td><code>MIN_COOLDOWN</code></td></tr>
+          <tr><td>Будущие ускорения перезарядки — только делением: база / (1 + Σ скорость)</td><td class="num dim">—</td><td>ускорений пока нет</td></tr>
+          <tr><td>Затяжной бой: после 60-й секунды урон врага +10% каждые 5 с</td><td class="num">60 / 5 / 10%</td><td><code>FATIGUE</code></td></tr>
+        </tbody>
+      </table></div>
+      <h3>Ещё не сделано из основ гайда</h3>
+      <ul class="plain">
+        <li>Симулятор боёв без графики с тремя профилями навыка (30 / 60 / 90% парирований) и наивной версией сборок (6.1).</li>
+        <li>Броня (1.3) — в игре сейчас нет защиты; когда появится, только формулой броня / (броня + K).</li>
+      </ul>
+    </section>
+  </main>
+</div>
+
+<script>
+  (function () {
+    var pages = Array.prototype.slice.call(document.querySelectorAll('[data-page]'));
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    function show() {
+      var id = (location.hash || '#overview').slice(1);
+      if (!pages.some(function (p) { return p.id === id; })) id = 'overview';
+      pages.forEach(function (p) { p.hidden = p.id !== id; });
+      links.forEach(function (a) {
+        if (a.getAttribute('href') === '#' + id) a.setAttribute('aria-current', 'page');
+        else a.removeAttribute('aria-current');
+      });
+    }
+    window.addEventListener('hashchange', function () { show(); window.scrollTo(0, 0); });
+    show();
+  })();
+</script>
