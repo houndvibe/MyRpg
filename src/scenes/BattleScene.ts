@@ -2,18 +2,24 @@
 // Слева — герой и его инвентарь: пассивные предметы срабатывают сами, активные — по клику. Справа — враг и его сумка.
 // Между ними — поле атак: атаки врага летят кружками, ПКМ по кружку курсором основного оружия — парирование.
 // Курсор — отрезок клинка по числам PARRY_CURSOR (та же зона попадания, что у картинки-курсора в Людъмаке).
+// Два режима: отладочный (враг run.enemy, кнопки «Назад», «Ещё раз», «На главный») и бой с собеседником из разговора
+// (данные сцены { dialog }): фон — интерьер разговора, анимированные портреты героя и собеседника, имя собеседника,
+// враг — Dialog.battle.enemy; кнопок выхода нет, после боя — клик и возврат в разговор с узла по итогу.
 import * as Phaser from 'phaser';
 import { GridView } from '../components/GridView';
-import { BATTLE_LAYOUT, PARRY_CURSOR } from '../config/assets';
+import { PortraitPlayer } from '../components/AnimatedPortrait';
+import { addBagUnderlay } from '../components/BagUnderlay';
+import { BATTLE_LAYOUT, DIALOG_BACKGROUNDS, DIALOG_LAYOUT, itemKey, NPC_PORTRAITS, PARRY_CURSOR } from '../config/assets';
 import { BATTLE_FAST_SPEED } from '../config/balance';
 import { FEEL } from '../config/feel';
-import { ENEMIES } from '../data/enemies';
+import { DIALOGS, type Dialog, type DialogId } from '../data/dialogs';
+import { ENEMIES, type EnemyId } from '../data/enemies';
 import { ENEMY_ITEMS, type EnemyItemId } from '../data/enemyItems';
 import { ITEMS } from '../data/items';
 import { removeItem, run, spendCharge } from '../state';
 import { MASK, rectMask, type OwnedItem } from '../systems/backpack';
 import { BattleSim, type BattleEvent, type EnemySlot } from '../systems/battle';
-import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeOwnedItem, W } from '../ui';
+import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeOwnedItem, H, W } from '../ui';
 
 const L = BATTLE_LAYOUT;
 const BAR_W = 360;
@@ -37,6 +43,12 @@ export class BattleScene extends Phaser.Scene {
   private speed = 1;
   private shownStatus: BattleSim['status'] = 'fight';
   private finished = false;
+  /** Бой с собеседником: id и данные разговора (null — отладочный бой). */
+  private storyId: DialogId | null = null;
+  private story: Dialog | null = null;
+  private enemy: EnemyId = run.enemy;
+  private enemyName = '';
+  private portraits: PortraitPlayer[] = [];
 
   private heroView!: GridView<OwnedItem>;
   private enemyView!: GridView<EnemySlot>;
@@ -67,10 +79,20 @@ export class BattleScene extends Phaser.Scene {
     super('Battle');
   }
 
+  /** Данные сцены: { dialog } — бой с собеседником этого разговора; без них — отладочный бой с run.enemy. */
+  init(data?: { dialog?: DialogId }): void {
+    this.storyId = data?.dialog ?? null;
+    this.story = this.storyId ? DIALOGS[this.storyId] : null;
+    this.enemy = this.story?.battle?.enemy ?? run.enemy;
+    this.enemyName = this.story ? this.story.speaker : ENEMIES[this.enemy].name;
+  }
+
   create(): void {
     const items = run.items.filter((i) => i.inGrid);
     const mainUid = items.some((i) => i.uid === run.mainUid) ? run.mainUid : null;
-    this.sim = new BattleSim({ items, enemy: run.enemy, mainUid });
+    this.sim = new BattleSim({ items, enemy: this.enemy, mainUid });
+    this.portraits = [];
+    if (this.story) this.addStoryBackground(this.story);
     this.speed = 1;
     this.shownStatus = 'fight';
     this.finished = false;
@@ -83,14 +105,17 @@ export class BattleScene extends Phaser.Scene {
     this.swingUntil = 0;
     this.cursorShown = false;
 
-    // Шапка.
-    new Button(this, 130, 45, 200, 54, '← Назад', () => this.leave(), 22);
-    addText(this, W / 2, 45, `Бой: ${ENEMIES[run.enemy].name}`, 32, C.accent).setOrigin(0.5);
+    // Шапка. В бою с собеседником выхода нет — только победа или поражение.
+    if (!this.story) new Button(this, 130, 45, 200, 54, '← Назад', () => this.leave(), 22);
+    addText(this, W / 2, 45, `Бой: ${this.enemyName}`, 32, C.accent).setOrigin(0.5);
     const speedBtn = new Button(this, 380, 45, 220, 54, 'Ускорение ×1', () => {
       this.speed = this.speed === 1 ? BATTLE_FAST_SPEED : 1;
       speedBtn.setLabel(`Ускорение ×${this.speed}`);
     }, 22);
-    addText(this, W - 60, 92, 'ПКМ по кружку в поле атак — парировать. ЛКМ по активному предмету — применить.', 18, C.dim).setOrigin(1, 0.5);
+    // Подсказка: в бою с собеседником справа портрет — подсказка по центру под заголовком.
+    const hint = 'ПКМ по кружку в поле атак — парировать. ЛКМ по активному предмету — применить.';
+    if (this.story) addText(this, W / 2, 92, hint, 18, C.dim).setOrigin(0.5);
+    else addText(this, W - 60, 92, hint, 18, C.dim).setOrigin(1, 0.5);
 
     // Поле атак — тонкая рамка.
     const z = L.parryZone;
@@ -98,8 +123,13 @@ export class BattleScene extends Phaser.Scene {
 
     // Герой: плашка вместо портрета, имя, здоровье, статусы.
     const hp = L.heroPortrait;
-    this.add.rectangle(hp.x, hp.y, hp.w, hp.h, C.panel).setStrokeStyle(2, C.border);
-    addText(this, hp.x, hp.y, 'Герой', 30, C.dim).setOrigin(0.5);
+    if (this.story) {
+      const S = L.storyPortraits;
+      this.portraits.push(new PortraitPlayer(this, DIALOG_LAYOUT.heroPortrait.anim, hp.x, S.bottom, S.h));
+    } else {
+      this.add.rectangle(hp.x, hp.y, hp.w, hp.h, C.panel).setStrokeStyle(2, C.border);
+      addText(this, hp.x, hp.y, 'Герой', 30, C.dim).setOrigin(0.5);
+    }
     const hx = hp.x + hp.w / 2 + 30;
     addText(this, hx, hp.y - 110, 'Герой', 36, C.accent);
     [this.heroBar, this.heroHpText] = this.makeBar(hx, hp.y - 40);
@@ -107,9 +137,13 @@ export class BattleScene extends Phaser.Scene {
 
     // Враг: портрет, имя, здоровье.
     const ep = L.enemyPortrait;
-    this.enemyImg = addPortrait(this, ep.x, ep.y, ep.w, ep.h, run.enemy).setDepth(2);
+    if (this.story) {
+      const npc = new PortraitPlayer(this, NPC_PORTRAITS[this.story.portrait].anim, ep.x, L.storyPortraits.bottom, L.storyPortraits.h);
+      this.portraits.push(npc);
+      this.enemyImg = npc.img.setDepth(2);
+    } else this.enemyImg = addPortrait(this, ep.x, ep.y, ep.w, ep.h, this.enemy).setDepth(2);
     const ex = ep.x - ep.w / 2 - 30;
-    addText(this, ex, ep.y - 110, ENEMIES[run.enemy].name, 36, C.bad).setOrigin(1, 0);
+    addText(this, ex, ep.y - 110, this.enemyName, 36, C.bad).setOrigin(1, 0);
     [this.enemyBar, this.enemyHpText] = this.makeBar(ex - BAR_W, ep.y - 40);
     this.enemyStatus = addText(this, ex, ep.y, '', 22, C.bad, { align: 'right' }).setOrigin(1, 0);
 
@@ -124,14 +158,17 @@ export class BattleScene extends Phaser.Scene {
       .setDepth(70)
       .setVisible(false);
 
+    // Инвентарь героя лежит в сумке: картинка-подложка, сетка поверх без своих клеток.
+    addBagUnderlay(this, L.heroGrid.x, L.heroGrid.y, L.heroCell, MASK.cols, MASK.rows);
     this.heroView = new GridView<OwnedItem>(this, {
       x: L.heroGrid.x,
       y: L.heroGrid.y,
-      cell: L.cell,
+      cell: L.heroCell,
       mask: MASK,
+      bare: true,
       mode: 'battle',
       items: () => items,
-      look: (it) => ({ w: ITEMS[it.id].w, h: ITEMS[it.id].h, label: ITEMS[it.id].name, color: CATEGORY_COLORS[ITEMS[it.id].category], charges: it.charges ?? null }),
+      look: (it) => ({ w: ITEMS[it.id].w, h: ITEMS[it.id].h, label: ITEMS[it.id].name, color: CATEGORY_COLORS[ITEMS[it.id].category], charges: it.charges ?? null, image: itemKey(it.id) }),
       onHover: (it) => this.setInfo(it ? describeOwnedItem(it, this.sim.powers, this.sim.items) : ''),
       onClick: (it) => {
         if (this.sim.useActive(it.uid)) this.afterSimChange();
@@ -139,7 +176,7 @@ export class BattleScene extends Phaser.Scene {
     });
     this.heroView.setMain(this.sim.mainUid);
 
-    const def = ENEMIES[run.enemy];
+    const def = ENEMIES[this.enemy];
     this.enemyView = new GridView<EnemySlot>(this, {
       x: L.enemyGrid.right - def.bagCols * L.cell,
       y: L.enemyGrid.y,
@@ -157,9 +194,18 @@ export class BattleScene extends Phaser.Scene {
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => this.moveCursor(p));
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.input.setDefaultCursor('default'));
     this.afterSimChange(); // события начала боя: сгорело, отравлено, взрыв
+    if (this.story) this.cameras.main.fadeIn(FEEL.dialog.battleFadeMs);
+  }
+
+  /** Фон боя с собеседником: интерьер разговора во весь экран, притемнённый, чтобы сетки и поле атак читались. */
+  private addStoryBackground(story: Dialog): void {
+    const bg = this.add.image(W / 2, H / 2, DIALOG_BACKGROUNDS[story.background].key).setDepth(-10);
+    bg.setScale(Math.max(W / bg.width, H / bg.height));
+    this.add.rectangle(0, 0, W, H, 0x000000, L.storyDim).setOrigin(0).setDepth(-9);
   }
 
   update(_time: number, delta: number): void {
+    for (const p of this.portraits) p.update(delta);
     this.moveCursor(this.lastPointer);
     if (this.sim.status !== 'fight') return;
     if (this.time.now < this.hitStopUntil) return;
@@ -449,7 +495,7 @@ export class BattleScene extends Phaser.Scene {
     if (status === 'won') {
       this.hitStopUntil = this.time.now + FEEL.hitStopMs;
       this.finish('Победа', C.good);
-    } else if (status === 'lost') this.finish('Герой пал', C.bad);
+    } else if (status === 'lost') this.finish(this.story ? 'Поражение' : 'Герой пал', C.bad);
   }
 
   /** Конец боя: надпись и кнопки «Ещё раз» и «На главный экран». Потраченные расходники не возвращаются. */
@@ -461,6 +507,19 @@ export class BattleScene extends Phaser.Scene {
     const box = this.add.container(L.centerX, 600).setDepth(90);
     box.add(this.add.rectangle(0, 0, 560, 260, 0x000000, 0.85).setStrokeStyle(2, C.border));
     box.add(addText(this, 0, -70, message, 56, color).setOrigin(0.5));
+    if (this.story) {
+      // Бой с собеседником: клик в любом месте — обратно в разговор с узла по итогу.
+      box.add(addText(this, 0, 50, 'Нажмите, чтобы продолжить', 26, C.dim).setOrigin(0.5));
+      const node = this.sim.status === 'won' ? this.story.battle!.won : this.story.battle!.lost;
+      const ms = FEEL.dialog.battleFadeMs;
+      this.time.delayedCall(ms, () =>
+        this.input.once('pointerdown', () => {
+          this.cameras.main.fadeOut(ms);
+          this.time.delayedCall(ms, () => this.scene.start('Map', { dialog: this.storyId, node }));
+        }),
+      );
+      return;
+    }
     box.add(new Button(this, -135, 50, 240, 70, 'Ещё раз', () => this.scene.restart(), 26));
     box.add(new Button(this, 135, 50, 240, 70, 'На главный', () => this.leave(), 26));
   }
@@ -570,7 +629,7 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private logEvent(e: BattleEvent): void {
-    const foe = ENEMIES[run.enemy].name;
+    const foe = this.enemyName;
     switch (e.type) {
       case 'strike': {
         const icon = this.parryIcons.get(e.id);

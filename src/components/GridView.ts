@@ -16,6 +16,8 @@ export interface PieceLook {
   color: number;
   /** Заряды (null — без счёта). */
   charges?: number | null;
+  /** Ключ картинки предмета: есть текстура — плитка без цвета и надписи, картинка вписана в клетки (поворачивается с предметом). */
+  image?: string;
 }
 
 export interface GridConfig<T extends Placement> {
@@ -24,6 +26,8 @@ export interface GridConfig<T extends Placement> {
   cell: number;
   mask: Mask;
   mode: GridMode;
+  /** Без своих клеток (фон и линии не рисуются) — ячейки нарисованы на подложке под сеткой. */
+  bare?: boolean;
   items: () => T[];
   look: (it: T) => PieceLook;
   onHover?: (it: T | null) => void;
@@ -48,6 +52,8 @@ interface Piece<T> {
   border: Phaser.GameObjects.Rectangle;
   charges: Phaser.GameObjects.Text;
   badges: Phaser.GameObjects.Container;
+  /** Картинка предмета (если есть) — вместо цветной плитки с надписью. */
+  img: Phaser.GameObjects.Image | null;
   color: number;
   /** Текущий размер в клетках (с поворотом). */
   w: number;
@@ -84,7 +90,7 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     const cells = scene.add.graphics();
     for (let r = 0; r < mask.rows; r++) {
       for (let c = 0; c < mask.cols; c++) {
-        if (!mask.open[r][c]) continue;
+        if (!mask.open[r][c] || cfg.bare) continue;
         cells.fillStyle(C.cell, 1).fillRect(c * cell, r * cell, cell, cell);
         cells.lineStyle(2, C.cellLine, 1).strokeRect(c * cell, r * cell, cell, cell);
       }
@@ -129,9 +135,20 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     const pw = w * cell;
     const ph = h * cell;
     const cont = this.scene.add.container(it.col * cell, it.row * cell);
-    const bg = this.scene.add.rectangle(3, 3, pw - 6, ph - 6, look.color).setOrigin(0).setStrokeStyle(2, 0x000000, 0.6);
+    const hasImage = !!look.image && this.scene.textures.exists(look.image);
+    const bg = this.scene.add.rectangle(3, 3, pw - 6, ph - 6, look.color, hasImage ? 0 : 1).setOrigin(0);
+    if (!hasImage) bg.setStrokeStyle(2, 0x000000, 0.6);
     const shade = this.scene.add.rectangle(3, 3, pw - 6, 0, 0x000000, 0.55).setOrigin(0);
-    const label = addText(this.scene, pw / 2, ph / 2, look.label, Math.max(13, Math.round(cell * 0.17)), C.text, {
+    // Картинка вписана в клетки предмета с отступом, пропорции сохраняются; повёрнутый предмет — картинка на 90°.
+    let img: Phaser.GameObjects.Image | null = null;
+    if (hasImage) {
+      img = this.scene.add.image(pw / 2, ph / 2, look.image!);
+      const pad = Math.round(cell * 0.08);
+      const boxW = (it.rotated ? ph : pw) - pad * 2;
+      const boxH = (it.rotated ? pw : ph) - pad * 2;
+      img.setScale(Math.min(boxW / img.width, boxH / img.height)).setAngle(it.rotated ? 90 : 0);
+    }
+    const label = addText(this.scene, pw / 2, ph / 2, hasImage ? '' : look.label, Math.max(13, Math.round(cell * 0.17)), C.text, {
       align: 'center',
       wordWrap: { width: pw - 12 },
       stroke: '#000000',
@@ -143,9 +160,9 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     }).setOrigin(1, 1);
     const border = this.scene.add.rectangle(1, 1, pw - 2, ph - 2).setOrigin(0).setStrokeStyle(4, 0xe0b65a).setVisible(false);
     const badges = this.scene.add.container(0, 0);
-    cont.add([bg, shade, label, charges, badges, border]);
+    cont.add([bg, ...(img ? [img] : []), shade, label, charges, badges, border]);
     this.add(cont);
-    const piece: Piece<T> = { it, cont, bg, shade, border, charges, badges, color: look.color, w, h, main: false, ready: false, disabled: false, removing: false };
+    const piece: Piece<T> = { it, cont, bg, shade, border, charges, badges, img, color: look.color, w, h, main: false, ready: false, disabled: false, removing: false };
     if (this.cfg.mode !== 'view' || this.cfg.onHover) {
       cont.setInteractive(new Phaser.Geom.Rectangle(0, 0, pw, ph), Phaser.Geom.Rectangle.Contains);
       if (this.cfg.mode !== 'view') cont.input!.cursor = 'pointer';
@@ -187,7 +204,8 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     const p = this.pieces.get(uid);
     if (!p || p.disabled === on) return;
     p.disabled = on;
-    p.bg.setFillStyle(on ? 0x444444 : p.color);
+    if (p.img) p.img.setTint(on ? 0x777777 : 0xffffff);
+    else p.bg.setFillStyle(on ? 0x444444 : p.color);
     p.cont.setAlpha(on ? 0.6 : 1);
   }
 
@@ -226,8 +244,14 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
   flash(uid: number): void {
     const p = this.pieces.get(uid);
     if (!p || p.removing) return;
-    p.bg.setFillStyle(0xffffff);
-    this.scene.time.delayedCall(90, () => p.bg.active && p.bg.setFillStyle(p.disabled ? 0x444444 : p.color));
+    if (p.img) {
+      const img = p.img;
+      img.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL);
+      this.scene.time.delayedCall(90, () => img.active && img.clearTint().setTint(p.disabled ? 0x777777 : 0xffffff));
+    } else {
+      p.bg.setFillStyle(0xffffff);
+      this.scene.time.delayedCall(90, () => p.bg.active && p.bg.setFillStyle(p.disabled ? 0x444444 : p.color));
+    }
     this.scene.tweens.killTweensOf(p.cont);
     p.cont.setScale(1);
     this.scene.tweens.add({ targets: p.cont, scale: 1.05, duration: 70, yoyo: true });

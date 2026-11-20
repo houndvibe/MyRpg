@@ -1,8 +1,9 @@
-// Главный экран прототипа: инвентарь 5×5 (соседство, основное оружие), выдача любого предмета героя,
+// Режим отладки (бывший главный экран прототипа): инвентарь 5×5 (соседство, основное оружие), выдача любого предмета героя,
 // выбор врага и кнопка «В бой».
 import * as Phaser from 'phaser';
 import { GridView } from '../components/GridView';
-import { MAIN_LAYOUT as L } from '../config/assets';
+import { addBagUnderlay } from '../components/BagUnderlay';
+import { itemKey, MAIN_LAYOUT as L } from '../config/assets';
 import { ENEMY_STAT_MULT, ENEMY_STATS, HERO_HP } from '../config/balance';
 import { ENEMIES, ENEMY_IDS, type EnemyId } from '../data/enemies';
 import { ITEM_IDS, ITEMS } from '../data/items';
@@ -29,19 +30,23 @@ export class MainScene extends Phaser.Scene {
     this.enemyButtons = new Map();
     this.portrait = null;
     this.hoverText = null;
-    addText(this, L.title.x, L.title.y, 'Прототип: инвентарь и бой', 40, C.accent);
+    addText(this, L.title.x, L.title.y, 'Режим отладки: инвентарь и бой', 40, C.accent);
+    const mb = L.menuButton;
+    new Button(this, mb.x, mb.y, mb.w, mb.h, '← Меню', () => this.scene.start('Menu'), 22);
 
     // ─── Инвентарь ───
+    // Инвентарь — сетка в сумке: картинка-подложка, сетка поверх без своих клеток.
     const g = L.grid;
-    addText(this, g.x, g.y - 40, 'Инвентарь', 26, C.text);
+    addBagUnderlay(this, g.x, g.y, g.cell, MASK.cols, MASK.rows);
     this.grid = new GridView<OwnedItem>(this, {
       x: g.x,
       y: g.y,
       cell: g.cell,
       mask: MASK,
+      bare: true,
       mode: 'edit',
       items: () => run.items,
-      look: (it) => ({ w: ITEMS[it.id].w, h: ITEMS[it.id].h, label: ITEMS[it.id].name, color: CATEGORY_COLORS[ITEMS[it.id].category], charges: it.charges ?? null }),
+      look: (it) => ({ w: ITEMS[it.id].w, h: ITEMS[it.id].h, label: ITEMS[it.id].name, color: CATEGORY_COLORS[ITEMS[it.id].category], charges: it.charges ?? null, image: itemKey(it.id) }),
       onHover: (it) => this.setHover(it ? describeOwnedItem(it, computePower(run.items).powers, run.items) : null),
       canPlace: (it, col, row, rotated) => canPlace(run.items, it.id, rotated, col, row, it.uid),
       onPlace: (it, col, row, rotated) => Object.assign(it, { col, row, rotated }),
@@ -103,7 +108,8 @@ export class MainScene extends Phaser.Scene {
     });
     this.bagText = addText(this, E.bag.x, E.bag.y, '', 17, C.text, { wordWrap: { width: E.bag.w }, lineSpacing: 4 });
     const f = E.fight;
-    new Button(this, f.x, f.y, f.w, f.h, 'В бой', () => this.scene.start('Battle'), 40);
+    // {} — отладочный бой: без данных Phaser отдал бы сцене прошлые (например, бой с собеседником).
+    new Button(this, f.x, f.y, f.w, f.h, 'В бой', () => this.scene.start('Battle', {}), 40);
 
     this.selectEnemy(run.enemy);
     this.refresh();

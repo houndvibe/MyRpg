@@ -3,6 +3,7 @@
 import { ITEM_STATS, START_ITEMS } from './config/balance';
 import type { EnemyId } from './data/enemies';
 import { ENEMY_IDS } from './data/enemies';
+import { START_LOCATION, START_POI, type LocationId, type PoiId } from './data/map';
 import { ITEMS, type ItemId } from './data/items';
 import { findSpot, type OwnedItem } from './systems/backpack';
 
@@ -14,9 +15,12 @@ export interface RunState {
   mainUid: number | null;
   /** Враг, выбранный на главном экране. */
   enemy: EnemyId;
+  /** Игровой режим: локация, где герой, и точка в ней (живут, пока открыта игра). */
+  location: LocationId;
+  mapPoi: PoiId;
 }
 
-export const run: RunState = { items: [], nextUid: 1, mainUid: null, enemy: ENEMY_IDS[0] };
+export const run: RunState = { items: [], nextUid: 1, mainUid: null, enemy: ENEMY_IDS[0], location: START_LOCATION, mapPoi: START_POI };
 
 // Стартовый набор, как в Людъмаке: стартовое оружие сразу основное.
 for (const id of START_ITEMS) addItem(id);
