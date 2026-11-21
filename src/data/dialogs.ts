@@ -18,6 +18,8 @@ export interface DialogNode {
 export interface Dialog {
   /** Имя собеседника — на плашке рамки. */
   speaker: string;
+  /** Подпись кнопки разговора в боковом меню точки. */
+  talkLabel: string;
   /** Ключ портрета собеседника (NPC_PORTRAITS в assets.ts). */
   portrait: 'miller';
   /** Фон на время разговора (DIALOG_BACKGROUNDS в assets.ts). */
@@ -31,6 +33,7 @@ export interface Dialog {
 export const DIALOGS = {
   miller: {
     speaker: 'Мельник',
+    talkLabel: 'Поговорить с мельником',
     portrait: 'miller',
     background: 'mill',
     start: 'start',
@@ -94,5 +97,5 @@ export type DialogId = keyof typeof DIALOGS;
 
 /** Какой диалог открывается, когда герой приходит в точку (или кликает по ней, стоя в ней). */
 export const POI_DIALOGS: Partial<Record<PoiId, DialogId>> = {
-  mill: 'miller',
+  mill: 'miller', // мельник — на мельнице
 };

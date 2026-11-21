@@ -4,13 +4,13 @@ import * as Phaser from 'phaser';
 import { GridView } from '../components/GridView';
 import { addBagUnderlay } from '../components/BagUnderlay';
 import { itemKey, MAIN_LAYOUT as L } from '../config/assets';
-import { ENEMY_STAT_MULT, ENEMY_STATS, HERO_HP } from '../config/balance';
+import { ENEMY_STAT_MULT, ENEMY_STATS } from '../config/balance';
 import { ENEMIES, ENEMY_IDS, type EnemyId } from '../data/enemies';
 import { ITEM_IDS, ITEMS } from '../data/items';
 import { canBeMain, addItem, removeItem, run, setMain } from '../state';
 import { canPlace, MASK, type OwnedItem } from '../systems/backpack';
-import { computePower, gearSummary } from '../systems/synergy';
-import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeItem, describeOwnedItem, H } from '../ui';
+import { computePower } from '../systems/synergy';
+import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeGear, describeItem, describeOwnedItem, H, stopGameMusic } from '../ui';
 
 export class MainScene extends Phaser.Scene {
   private grid!: GridView<OwnedItem>;
@@ -27,6 +27,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   create(): void {
+    stopGameMusic(this);
     this.enemyButtons = new Map();
     this.portrait = null;
     this.hoverText = null;
@@ -150,23 +151,6 @@ export class MainScene extends Phaser.Scene {
       this.info.setText(this.hoverText);
       return;
     }
-    const s = gearSummary(run.items, power);
-    const main = run.items.find((i) => i.uid === run.mainUid);
-    const r = (n: number) => (Math.round(n * 10) / 10).toString();
-    const lines = [
-      'Сила снаряжения',
-      '',
-      `Здоровье героя: ${HERO_HP}`,
-      `Урон в секунду: ${r(s.dps)}`,
-      `Лечение в секунду: ${r(s.healPerSec)}`,
-      s.selfPerSec ? `Урон себе в секунду: ${r(s.selfPerSec)}` : '',
-      '',
-      main ? `Основное оружие: ${ITEMS[main.id].name}` : 'Основного оружия нет — в бою атаки не отбить.',
-      s.disabled.length ? `Отключены: ${s.disabled.map((id) => ITEMS[id].name).join(', ')}` : '',
-      s.explosive.length ? `Могут взорваться в начале боя: ${s.explosive.map((e) => `${ITEMS[e.id].name} (${Math.round(e.chance * 100)}%)`).join(', ')}` : '',
-      '',
-      'Наведи на предмет — его характеристики и что ему дают соседи.',
-    ];
-    this.info.setText(lines.filter((l, i, a) => l !== '' || (i > 0 && a[i - 1] !== '')).join('\n'));
+    this.info.setText(describeGear(run.items, run.mainUid, power));
   }
 }

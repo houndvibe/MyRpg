@@ -2,7 +2,7 @@
 // Новый предмет — id в ItemId, запись в ITEMS и числа в ITEM_STATS.
 import type { TagId } from './tags';
 
-export type ItemId = 'steel_sword' | 'bread' | 'healing_elixir' | 'whetstone';
+export type ItemId = 'cane' | 'bread' | 'healing_elixir' | 'whetstone';
 
 /** passive — срабатывает сам по перезарядке; active — нажатие в бою, тратит заряд. */
 export type ItemMode = 'passive' | 'active';
@@ -41,7 +41,8 @@ export type ParryPerkId = 'sword';
 export type ItemTier = 1 | 2 | 3;
 
 export const ITEMS: Record<ItemId, ItemDef> = {
-  steel_sword: { id: 'steel_sword', name: 'Стальной меч', mode: 'passive', category: 'weapon', tags: [], w: 1, h: 3, tier: 1, parryPerk: 'sword' },
+  // Трость с железным наконечником — заменила стальной меч, характеристики те же (по решению дизайнера).
+  cane: { id: 'cane', name: 'Трость', mode: 'passive', category: 'weapon', tags: [], w: 1, h: 3, tier: 1, parryPerk: 'sword' },
   bread: { id: 'bread', name: 'Краюха хлеба', mode: 'passive', category: 'food', tags: ['heal'], w: 1, h: 1, tier: 1 },
   healing_elixir: { id: 'healing_elixir', name: 'Лечебный эликсир', mode: 'active', category: 'alchemy', tags: ['elixir'], w: 1, h: 1, tier: 2 },
   whetstone: { id: 'whetstone', name: 'Точильный камень', mode: 'passive', category: 'amulet', tags: [], w: 1, h: 1, tier: 1 },

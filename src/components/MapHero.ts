@@ -69,12 +69,11 @@ export class MapHero {
 
 const avg = (a: number[]) => a.reduce((s, v) => s + v, 0) / a.length;
 
-/** Кадры листа героя (поза, ходьба, портрет) добавляются один раз на игру. */
+/** Кадры листа героя (поза, ходьба) добавляются один раз на игру. */
 export function ensureHeroFrames(scene: Phaser.Scene): void {
   const tex = scene.textures.get(H.key);
   if (tex.has('idle')) return;
   tex.add('idle', 0, H.idle[0], H.idle[1], H.idle[2], H.idle[3]);
   H.walk.forEach((r, i) => tex.add(`walk${i}`, 0, r[0], r[1], r[2], r[3]));
-  tex.add('portrait', 0, ...H.portrait);
   tex.firstFrame = '__BASE'; // Phaser делает первый добавленный кадр кадром по умолчанию
 }

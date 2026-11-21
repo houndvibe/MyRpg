@@ -111,6 +111,105 @@ export class MapGraph {
     return prev.get(target) ?? [];
   }
 
+  /** Точка позиции: узел или место на дороге. */
+  pointAt(pos: MapPos): Pt {
+    return 'node' in pos ? this.nodePoint(pos.node) : this.pointOnRoad(pos.road, pos.d);
+  }
+
+  /** Ближайшее к точке место на дорогах: дорога, расстояние от её начала и расстояние до точки. */
+  nearestOnRoad(p: Pt): { road: number; d: number; dist: number } {
+    let best = { road: 0, d: 0, dist: Infinity };
+    this.roads.forEach((r, road) => {
+      const cum = this.cum[road];
+      for (let i = 1; i < r.points.length; i++) {
+        const [ax, ay] = r.points[i - 1];
+        const [bx, by] = r.points[i];
+        const len2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
+        const t = Math.min(1, Math.max(0, ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / len2));
+        const dist = Math.hypot(ax + (bx - ax) * t - p.x, ay + (by - ay) * t - p.y);
+        if (dist < best.dist) best = { road, d: cum[i - 1] + (cum[i] - cum[i - 1]) * t, dist };
+      }
+    });
+    return best;
+  }
+
+  /**
+   * Кратчайший маршрут от позиции героя до любой позиции: узла или места на дороге. К месту на дороге — через ближний
+   * из её концов или прямо по ней, если герой уже на этой дороге (или в одном из её концов).
+   */
+  routeTo(pos: MapPos, dest: MapPos): Leg[] {
+    if ('node' in dest) return this.route(pos, dest.node);
+    const r = this.roads[dest.road];
+    const L = this.roadLength(dest.road);
+    const options: Leg[][] = [
+      [...this.route(pos, r.a), { road: dest.road, d0: 0, d1: dest.d }],
+      [...this.route(pos, r.b), { road: dest.road, d0: L, d1: dest.d }],
+    ];
+    if (!('node' in pos) && pos.road === dest.road) options.push([{ road: dest.road, d0: pos.d, d1: dest.d }]);
+    const best = options.reduce((p, q) => (routeLength(q) < routeLength(p) ? q : p));
+    return best.filter((l) => legLength(l) > 1e-6);
+  }
+
+  /** Дороги из узла: по какой дороге и с какого конца (fromA — от её начала). */
+  exits(node: string): { road: number; fromA: boolean }[] {
+    return (this.adj.get(node) ?? []).map((e) => ({ road: e.road, fromA: e.fromA }));
+  }
+
+  /** Концы дороги — узлы a и b. */
+  roadEnds(road: number): { a: string; b: string } {
+    return { a: this.roads[road].a, b: this.roads[road].b };
+  }
+
+  /** Куда ведёт дорога от места d на look вперёд (sign +1 — к концу b, −1 — к началу a): единичный вектор (0, 0 — тупик). */
+  heading(road: number, d: number, sign: 1 | -1, look: number): Pt {
+    const p = this.pointOnRoad(road, d);
+    const q = this.pointOnRoad(road, d + sign * look);
+    const len = Math.hypot(q.x - p.x, q.y - p.y);
+    return len < 1e-6 ? { x: 0, y: 0 } : { x: (q.x - p.x) / len, y: (q.y - p.y) / len };
+  }
+
+  /**
+   * Шаг ходьбы по клавишам: из позиции pos пройти dist по дорогам в сторону v (единичный вектор, ось y вниз).
+   * На дороге герой идёт туда, куда она ведёт ближе к v (смотрит на look вперёд и назад), и продолжает, пока дорога
+   * не уходит от v сильнее keepDot (так проходятся серпантины). В узле выбирает дорогу, чьё начало ближе всего к v;
+   * если ни одна не ближе minDot — стоит. sign — в какую сторону по дороге шёл (для продолжения на следующем шаге).
+   */
+  steer(pos: MapPos, sign: 1 | -1, v: Pt, dist: number, look: number, minDot: number, keepDot: number): { pos: MapPos; sign: 1 | -1; moved: number } {
+    const dot = (a: Pt) => a.x * v.x + a.y * v.y;
+    let cur: MapPos = 'node' in pos ? { ...pos } : { ...pos };
+    let s = sign;
+    let left = dist;
+    for (let guard = 0; left > 1e-6 && guard < 24; guard++) {
+      if ('node' in cur) {
+        let best: { road: number; fromA: boolean; dot: number } | null = null;
+        for (const e of this.exits(cur.node)) {
+          const h = this.heading(e.road, e.fromA ? 0 : this.roadLength(e.road), e.fromA ? 1 : -1, look);
+          const dt = dot(h);
+          if (!best || dt > best.dot) best = { ...e, dot: dt };
+        }
+        if (!best || best.dot < minDot) break;
+        cur = { road: best.road, d: best.fromA ? 0 : this.roadLength(best.road) };
+        s = best.fromA ? 1 : -1;
+        continue;
+      }
+      const L = this.roadLength(cur.road);
+      const ahead = dot(this.heading(cur.road, cur.d, s, look));
+      const back = dot(this.heading(cur.road, cur.d, -s as 1 | -1, look));
+      if (back > ahead && back >= minDot) s = -s as 1 | -1;
+      else if (ahead < keepDot || (ahead === 0 && back === 0)) break;
+      const nd = cur.d + s * left;
+      if (nd >= 0 && nd <= L) {
+        cur = { road: cur.road, d: nd };
+        left = 0;
+      } else {
+        left -= s > 0 ? L - cur.d : cur.d;
+        const ends = this.roadEnds(cur.road);
+        cur = { node: s > 0 ? ends.b : ends.a };
+      }
+    }
+    return { pos: cur, sign: s, moved: dist - left };
+  }
+
   /** Где герой на маршруте, пройдя s: точка и позиция на дороге (для разворота). */
   alongRoute(legs: Leg[], s: number): { pt: Pt; pos: MapPos } {
     let left = s;

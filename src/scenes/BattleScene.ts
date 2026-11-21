@@ -19,7 +19,7 @@ import { ITEMS } from '../data/items';
 import { removeItem, run, spendCharge } from '../state';
 import { MASK, rectMask, type OwnedItem } from '../systems/backpack';
 import { BattleSim, type BattleEvent, type EnemySlot } from '../systems/battle';
-import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeOwnedItem, H, W } from '../ui';
+import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeOwnedItem, H, playGameMusic, segmentDist, W } from '../ui';
 
 const L = BATTLE_LAYOUT;
 const BAR_W = 360;
@@ -69,6 +69,8 @@ export class BattleScene extends Phaser.Scene {
 
   /** Курсор в поле атак: отрезок клинка от кончика до конца лезвия и рукоять. */
   private cursor!: Phaser.GameObjects.Graphics;
+  /** Картинка основного оружия в роли курсора (если у предмета есть картинка); иначе курсор — линия-клинок. */
+  private cursorImg: Phaser.GameObjects.Image | null = null;
   /** От кончика (точка курсора) до конца лезвия и до рукояти, px; null — у основного оружия нет курсора. */
   private blade: { end: { x: number; y: number }; grip: { x: number; y: number } } | null = null;
   private cursorShown = false;
@@ -88,6 +90,7 @@ export class BattleScene extends Phaser.Scene {
   }
 
   create(): void {
+    if (this.story) playGameMusic(this); // бой с собеседником — часть игрового режима, музыка не прерывается
     const items = run.items.filter((i) => i.inGrid);
     const mainUid = items.some((i) => i.uid === run.mainUid) ? run.mainUid : null;
     this.sim = new BattleSim({ items, enemy: this.enemy, mainUid });
@@ -395,11 +398,20 @@ export class BattleScene extends Phaser.Scene {
   private createCursor(): void {
     this.cursor = this.add.graphics().setDepth(2500).setVisible(false);
     this.blade = null;
+    this.cursorImg = null;
     const main = this.sim.slots.find((s) => s.item.uid === this.sim.mainUid);
     const S = main?.def.parryPerk ? PARRY_CURSOR.weapons[main.def.id] : undefined;
     if (!main || !S) return;
     const h = S.size;
-    const w = (S.size * main.def.w) / main.def.h;
+    let w = (S.size * main.def.w) / main.def.h;
+    // Есть картинка предмета — она и есть курсор: опора в кончике, наклон покоя, высота size; ширина — по её пропорциям.
+    const key = itemKey(main.def.id);
+    if (this.textures.exists(key)) {
+      const img = this.add.image(0, 0, key).setOrigin(S.tip.x, S.tip.y).setAngle(S.angle).setDepth(2500).setVisible(false);
+      img.setScale(S.size / img.height);
+      w = (S.size * img.width) / img.height;
+      this.cursorImg = img;
+    }
     const a = Phaser.Math.DegToRad(S.angle);
     const rot = (q: { x: number; y: number }) => {
       const dx = (q.x - S.tip.x) * w;
@@ -434,13 +446,22 @@ export class BattleScene extends Phaser.Scene {
       this.input.setDefaultCursor(inField ? 'none' : 'default');
     }
     this.cursor.clear().setVisible(inField);
+    this.cursorImg?.setVisible(inField && this.canParry());
     if (!inField) return;
     if (!this.canParry()) {
       // Нечем отбивать: в поле — просто крестик.
       this.cursor.lineStyle(2, 0x8f889c, 1).lineBetween(m.x - 10, m.y, m.x + 10, m.y).lineBetween(m.x, m.y - 10, m.x, m.y + 10);
       return;
     }
-    this.drawBlade(this.cursor, m, this.time.now < this.swingUntil ? 0xffffff : FEEL.parry.cursorColor, 1);
+    const swinging = this.time.now < this.swingUntil;
+    if (this.cursorImg) {
+      // Картинка-курсор; взмах — на миг светлеет.
+      this.cursorImg.setPosition(m.x, m.y);
+      if (swinging) this.cursorImg.setTint(0xffffff).setTintMode(Phaser.TintModes.FILL).setAlpha(0.85);
+      else this.cursorImg.clearTint().setAlpha(1);
+      return;
+    }
+    this.drawBlade(this.cursor, m, swinging ? 0xffffff : FEEL.parry.cursorColor, 1);
   }
 
   /**
@@ -504,6 +525,7 @@ export class BattleScene extends Phaser.Scene {
     this.finished = true;
     this.input.setDefaultCursor('default');
     this.cursor.setVisible(false);
+    this.cursorImg?.setVisible(false);
     const box = this.add.container(L.centerX, 600).setDepth(90);
     box.add(this.add.rectangle(0, 0, 560, 260, 0x000000, 0.85).setStrokeStyle(2, C.border));
     box.add(addText(this, 0, -70, message, 56, color).setOrigin(0.5));
@@ -716,11 +738,3 @@ export class BattleScene extends Phaser.Scene {
   }
 }
 
-/** Расстояние от точки (x, y) до отрезка (x1, y1) — (x2, y2). */
-function segmentDist(x1: number, y1: number, x2: number, y2: number, x: number, y: number): number {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const len2 = dx * dx + dy * dy || 1;
-  const k = Phaser.Math.Clamp(((x - x1) * dx + (y - y1) * dy) / len2, 0, 1);
-  return Math.hypot(x - (x1 + k * dx), y - (y1 + k * dy));
-}

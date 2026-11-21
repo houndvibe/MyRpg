@@ -162,7 +162,7 @@ export class BattleSim {
       disabled: false,
       poisoned: false,
       timer: 0,
-      charges: item.charges ?? Infinity, // без зарядов (меч) — срабатывает без счёта
+      charges: item.charges ?? Infinity, // без зарядов (трость) — срабатывает без счёта
     }));
     this.spawn();
     this.explodeAtStart();

@@ -1,13 +1,66 @@
 // Общие элементы интерфейса прототипа: цвета, текст, кнопка, описания предметов словами.
 // Ни картинок, ни шрифтов: всё рисуется фигурами и системным шрифтом.
 import * as Phaser from 'phaser';
-import { ENEMY_ITEM_STATS, ENEMY_STAT_MULT, ITEM_STATS, PARRY_DAMAGE_MULT, type ItemStats } from './config/balance';
-import { enemyKey } from './config/assets';
+import { ENEMY_ITEM_STATS, ENEMY_STAT_MULT, HERO_HP, ITEM_STATS, PARRY_DAMAGE_MULT, type ItemStats } from './config/balance';
+import { enemyKey, MUSIC } from './config/assets';
+import { FEEL } from './config/feel';
 import { ENEMIES, type EnemyId } from './data/enemies';
 import { ENEMY_CATEGORY_NAMES, ENEMY_ITEMS, type EnemyItemId } from './data/enemyItems';
 import { CATEGORY_NAMES, ITEMS, type ItemCategory, type ItemId, type ParryPerkId } from './data/items';
 import type { OwnedItem } from './systems/backpack';
-import { auraText, type ItemPower } from './systems/synergy';
+import { auraText, computePower, gearSummary, type ItemPower } from './systems/synergy';
+
+export type MusicTrack = keyof typeof MUSIC;
+
+/** Трек, который сейчас должен звучать (живёт, пока открыта игра). */
+let currentTrack: MusicTrack = 'game';
+
+/**
+ * Музыка игрового режима (звук общий для сцен): track — какой трек звучит (нет — тот же, что сейчас: бой с собеседником
+ * не меняет музыку). Повторный вызов не перезапускает трек. Другой трек звучал — плавная смена (FEEL.music.crossfadeMs):
+ * новый нарастает, старые стихают и останавливаются. Вызов в каждом create сцены добивает смену, если прошлую сцену
+ * закрыли посреди затухания.
+ */
+export function playGameMusic(scene: Phaser.Scene, track: MusicTrack = currentTrack): void {
+  const F = FEEL.music;
+  currentTrack = track;
+  const sounds = (Object.keys(MUSIC) as MusicTrack[]).map((id) => ({ id, m: scene.sound.get(MUSIC[id].key) as Phaser.Sound.WebAudioSound | null }));
+  const switching = sounds.some((s) => s.id !== track && s.m?.isPlaying);
+  for (const { id, m } of sounds) {
+    if (id === track) continue;
+    if (!m?.isPlaying) continue;
+    scene.tweens.killTweensOf(m);
+    scene.tweens.add({ targets: m, volume: 0, duration: F.crossfadeMs, onComplete: () => m.stop() });
+  }
+  const key = MUSIC[track].key;
+  if (!scene.cache.audio.exists(key)) return;
+  const m = (scene.sound.get(key) ?? scene.sound.add(key, { loop: true, volume: 0 })) as Phaser.Sound.WebAudioSound;
+  scene.tweens.killTweensOf(m);
+  if (!m.isPlaying) {
+    m.setVolume(0);
+    m.play();
+  }
+  scene.tweens.add({ targets: m, volume: F.volume, duration: switching ? F.crossfadeMs : F.fadeInMs });
+}
+
+/** Музыка стихает и останавливается (меню, режим отладки). */
+export function stopGameMusic(scene: Phaser.Scene): void {
+  for (const t of Object.values(MUSIC)) {
+    const m = scene.sound.get(t.key) as Phaser.Sound.WebAudioSound | null;
+    if (!m?.isPlaying) continue;
+    scene.tweens.killTweensOf(m);
+    scene.tweens.add({ targets: m, volume: 0, duration: FEEL.music.fadeOutMs, onComplete: () => m.stop() });
+  }
+}
+
+/** Расстояние от точки (x, y) до отрезка (x1, y1)–(x2, y2): клинок парирования задел кружок, если оно не больше радиуса. */
+export function segmentDist(x1: number, y1: number, x2: number, y2: number, x: number, y: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy || 1;
+  const k = Phaser.Math.Clamp(((x - x1) * dx + (y - y1) * dy) / len2, 0, 1);
+  return Math.hypot(x - (x1 + k * dx), y - (y1 + k * dy));
+}
 
 export const W = 1920;
 export const H = 1080;
@@ -183,4 +236,29 @@ export function describeEnemyItem(id: EnemyItemId): string {
   const parts: string[] = [ENEMY_CATEGORY_NAMES[d.category], `урон ${hitRange(s.damage * ENEMY_STAT_MULT)}`, `${s.cooldown} с на замах`];
   if (s.charges) parts.push(`зарядов: ${s.charges}`);
   return `${d.name}: ${parts.join(' · ')}`;
+}
+
+/**
+ * Сила снаряжения словами (панель описания инвентаря, пока ничего не под курсором): здоровье, урон и лечение в секунду,
+ * основное оружие, отключённые и взрывоопасные предметы.
+ */
+export function describeGear(items: OwnedItem[], mainUid: number | null, power = computePower(items)): string {
+  const s = gearSummary(items, power);
+  const main = items.find((i) => i.uid === mainUid);
+  const r = (n: number) => (Math.round(n * 10) / 10).toString();
+  const lines = [
+    'Сила снаряжения',
+    '',
+    `Здоровье героя: ${HERO_HP}`,
+    `Урон в секунду: ${r(s.dps)}`,
+    `Лечение в секунду: ${r(s.healPerSec)}`,
+    s.selfPerSec ? `Урон себе в секунду: ${r(s.selfPerSec)}` : '',
+    '',
+    main ? `Основное оружие: ${ITEMS[main.id].name}` : 'Основного оружия нет — в бою атаки не отбить.',
+    s.disabled.length ? `Отключены: ${s.disabled.map((id) => ITEMS[id].name).join(', ')}` : '',
+    s.explosive.length ? `Могут взорваться в начале боя: ${s.explosive.map((e) => `${ITEMS[e.id].name} (${Math.round(e.chance * 100)}%)`).join(', ')}` : '',
+    '',
+    'Наведи на предмет — его характеристики и что ему дают соседи.',
+  ];
+  return lines.filter((l, i, a) => l !== '' || (i > 0 && a[i - 1] !== '')).join('\n');
 }
