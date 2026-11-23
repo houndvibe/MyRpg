@@ -17,7 +17,8 @@ export class BootScene extends Phaser.Scene {
     for (const id of ITEM_IDS) this.load.image(itemKey(id), itemImagePath(id));
     for (const v of [...Object.values(MAP_LAYOUT.locations), MAP_LAYOUT.world]) this.load.image(v.key, v.path);
     this.load.image(HERO_SHEET.key, HERO_SHEET.path);
-    for (const m of Object.values(HERO_MOTION)) this.load.image(m.key, m.path);
+    // Листы движения героя (у up и down один лист — грузится один раз).
+    for (const m of new Map(Object.values(HERO_MOTION).map((v) => [v.key, v])).values()) this.load.image(m.key, m.path);
     this.load.image(MAP_LAYOUT.portrait.key, MAP_LAYOUT.portrait.path);
     for (const b of MAP_LAYOUT.portraitBars) this.load.image(b.key, b.path);
     this.load.image(CARRIAGE_SHEET.key, CARRIAGE_SHEET.path);

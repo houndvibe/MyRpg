@@ -1,5 +1,6 @@
-// Фигурка героя на карте. Стоит — поза анфас с листа HERO_SHEET и лёгкое «дыхание»; идёт — цикл ходьбы в профиль,
-// бежит (Shift) — цикл бега (листы HERO_MOTION); влево — зеркально.
+// Фигурка героя на карте. Стоит — поза анфас с листа HERO_SHEET и лёгкое «дыхание»; идёт — цикл ходьбы в одном из 8 направлений
+// (листы HERO_MOTION): вправо и влево — в профиль (влево зеркально), бежит (Shift) — цикл бега; вверх — спиной, вниз — лицом,
+// по диагоналям — свои ряды (нет листа диагоналей — профиль). Направление — по сглаженному движению, с запасом на границах.
 // Кадры ставятся опорой в точку героя (у каждого кадра своя), поэтому не прыгают: у позы стоя — центр подставки,
 // у ходьбы и бега — низ ног по y и середина головы по x (находятся при загрузке листа).
 import * as Phaser from 'phaser';
@@ -9,6 +10,11 @@ import { FEEL } from '../config/feel';
 /** Рамка кадра в листе и опора: x, y, w, h, опора x, опора y (пиксели листа). */
 type Rect = readonly [number, number, number, number, number, number];
 type Motion = keyof typeof M;
+type Dir = 'side' | 'up' | 'down' | 'downRight' | 'downLeft' | 'upRight' | 'upLeft';
+
+/** Сектора по 45° от «вправо» по часовой (экран: y вниз): 0 вправо, 1 вниз-вправо, 2 вниз, … 7 вверх-вправо. */
+const SECTOR_DIR: Dir[] = ['side', 'downRight', 'down', 'downLeft', 'side', 'upLeft', 'up', 'upRight'];
+const DIR_SECTOR: Partial<Record<Dir, number>> = { downRight: 1, down: 2, downLeft: 3, upLeft: 5, up: 6, upRight: 7 };
 
 export class MapHero {
   readonly sprite: Phaser.GameObjects.Sprite;
@@ -17,19 +23,27 @@ export class MapHero {
   private walking = false;
   private running = false;
   private facing = 1;
+  /** Направление ходьбы (сектор по 45°): 'side' — профиль (facing — вправо или влево), иначе вертикаль или диагональ. */
+  private dir: Dir = 'side';
+  /** Сглаженное движение (для выбора направления). */
+  private vel = { x: 0, y: 0 };
   private walkTime = 0;
   private idleTime = 0;
   private idleScale: number;
-  /** Масштаб ходьбы и бега — один: рост героя по средней высоте кадра ходьбы (бег на тех же ячейках — того же размера). */
-  private motionScale: number;
-  private frames: Record<Motion, Rect[]>;
+  /**
+   * Масштаб кадров: профиль (ходьба и бег) — по средней высоте кадра ходьбы, вверх-вниз и диагонали — по своей средней
+   * высоте (рост героя один во всех направлениях).
+   */
+  private scales: Partial<Record<Motion, number>> = {};
+  private frames: Partial<Record<Motion, Rect[]>> = {};
 
   /** heightPx — рост фигурки в px мира (на карте локации и на карте мира разный). */
   constructor(scene: Phaser.Scene, heightPx: number) {
     ensureHeroFrames(scene);
-    this.frames = { walk: motionFrames(scene, 'walk'), run: motionFrames(scene, 'run') };
+    for (const m of Object.keys(M) as Motion[]) if (scene.textures.exists(M[m].key)) this.frames[m] = motionFrames(scene, m);
     this.idleScale = heightPx / H.idle[3];
-    this.motionScale = heightPx / avg(this.frames.walk.map((r) => r[3]));
+    const side = heightPx / avg(this.frames.walk!.map((r) => r[3]));
+    for (const m of Object.keys(this.frames) as Motion[]) this.scales[m] = m === 'walk' || m === 'run' ? side : heightPx / avg(this.frames[m]!.map((r) => r[3]));
     this.sprite = scene.add.sprite(0, 0, H.key, 'idle');
     this.showIdle();
   }
@@ -77,8 +91,8 @@ export class MapHero {
     this.walkTime = 0;
   }
 
-  /** Каждый кадр: на месте — дыхание, на ходу — кадр ходьбы или бега по времени; dx — сдвиг героя за кадр по горизонтали. */
-  update(deltaMs: number, dx: number): void {
+  /** Каждый кадр: на месте — дыхание, на ходу — кадр ходьбы или бега по времени; dx, dy — сдвиг героя за кадр. */
+  update(deltaMs: number, dx: number, dy = 0): void {
     if (!this.walking) {
       // Дыхание: растяжение по высоте от подставки вверх, плавно туда и обратно.
       const B = FEEL.map.hero.breath;
@@ -88,10 +102,38 @@ export class MapHero {
       this.syncLight();
       return;
     }
-    if (Math.abs(dx) > 0.01) this.facing = dx < 0 ? -1 : 1;
+    this.aim(dx, dy);
     this.walkTime += deltaMs / 1000;
-    const fps = this.running ? FEEL.map.hero.runFps : FEEL.map.hero.walkFps;
+    const F = FEEL.map.hero;
+    const D = F.dirs;
+    const m = this.motion();
+    const base = m === 'run' ? F.runFps : m === 'walk' ? F.walkFps : m === 'up' || m === 'down' ? D.vertFps : D.diagFps;
+    const fps = this.running && m !== 'run' && m !== 'walk' ? base * D.runSpeedup : base;
     this.showMotion(Math.floor(this.walkTime * fps));
+  }
+
+  /** Направление по сглаженному движению: сектор по 45°, смена — только за границей сектора с запасом hysteresisDeg. */
+  private aim(dx: number, dy: number): void {
+    const D = FEEL.map.hero.dirs;
+    if (Math.abs(dx) + Math.abs(dy) < 0.01) return;
+    this.vel.x += (dx - this.vel.x) * D.smooth;
+    this.vel.y += (dy - this.vel.y) * D.smooth;
+    const a = Phaser.Math.RadToDeg(Math.atan2(this.vel.y, this.vel.x)); // 0 — вправо, 90 — вниз
+    const sector = (Math.round(a / 45) + 8) % 8;
+    const cur = DIR_SECTOR[this.dir] ?? (this.facing > 0 ? 0 : 4);
+    if (sector !== cur) {
+      const off = Math.abs(((a - cur * 45 + 540) % 360) - 180);
+      if (off < 22.5 + D.hysteresisDeg) return;
+    }
+    // Взгляд вправо или влево — по горизонтали (для профиля и света); вверх и вниз его не меняют.
+    if (sector !== 2 && sector !== 6) this.facing = sector <= 1 || sector === 7 ? 1 : -1;
+    this.dir = SECTOR_DIR[sector];
+  }
+
+  /** Какой цикл сейчас: профиль (ходьба или бег) или лист своего направления (если загружен). */
+  private motion(): Motion {
+    if (this.dir === 'side' || !this.frames[this.dir]) return this.running ? 'run' : 'walk';
+    return this.dir;
   }
 
   private showIdle(): void {
@@ -100,10 +142,10 @@ export class MapHero {
   }
 
   private showMotion(n: number): void {
-    const m: Motion = this.running ? 'run' : 'walk';
-    const list = this.frames[m];
+    const m = this.motion();
+    const list = this.frames[m]!;
     const i = n % list.length;
-    this.setFrame(cutKey(m), `${m}${i}`, list[i], this.motionScale, this.facing < 0);
+    this.setFrame(cutKey(m), `${m}${i}`, list[i], this.scales[m]!, (m === 'walk' || m === 'run') && this.facing < 0);
   }
 
   /** Кадр с опорой; при зеркале опора отражается тоже. */
@@ -127,7 +169,9 @@ export class MapHero {
     rim.setScale(s.scaleX, s.scaleY).setPosition(dir[0] * L.rimOffset, dir[1] * L.rimOffset).setAlpha(L.rimAlpha * strength);
     // Перевёрнутая вниз фигурка смотрит головой вниз (90°); поворот — к направлению тени (прочь от источника).
     shadow.setScale(s.scaleX, -s.scaleY * L.shadowLength).setRotation(Math.atan2(-dir[1], -dir[0]) - Math.PI / 2).setAlpha(L.shadowAlpha * strength);
-    const tint = !this.walking ? (cfg.idleTint ?? L.idleTint) : (this.facing > 0) === (dir[0] > 0) ? (cfg.litTint ?? L.litTint) : (cfg.shadeTint ?? L.shadeTint);
+    // Лицом к свету: вверх и вниз — по вертикали (спиной к экрану — к источнику сверху), иначе — по горизонтали.
+    const toLight = this.dir === 'up' || this.dir === 'down' ? (this.dir === 'up') === (dir[1] < 0) : (this.facing > 0) === (dir[0] > 0);
+    const tint = !this.walking ? (cfg.idleTint ?? L.idleTint) : toLight ? (cfg.litTint ?? L.litTint) : (cfg.shadeTint ?? L.shadeTint);
     s.setTint(lerpColor(0xffffff, tint, strength));
   }
 }
@@ -139,7 +183,7 @@ function lerpColor(a: number, b: number, t: number): number {
   return (ch(16) << 16) | (ch(8) << 8) | ch(0);
 }
 const cutKey = (m: Motion) => `${M[m].key}_cut`;
-/** Найденные рамки и опоры кадров ходьбы и бега (на игру — один раз). */
+/** Найденные рамки и опоры кадров (на игру — один раз). */
 const found: Partial<Record<Motion, Rect[]>> = {};
 
 /** Поза стоя с листа героя добавляется один раз на игру. */
@@ -151,9 +195,9 @@ export function ensureHeroFrames(scene: Phaser.Scene): void {
 }
 
 /**
- * Кадры листа ходьбы или бега: фон вырезается (белый — заливкой от краёв ячейки, мягко по краю фигуры), в каждой ячейке —
- * рамка по непрозрачным пикселям и опора (низ ног; по x — середина головы, верхние 12% фигуры). Результат — холст-текстура
- * `<key>_cut` с кадрами `walk0…` / `run0…`.
+ * Кадры движения m: лист вырезается (cutBackground) в холст-текстуру `<key>_cut` — один раз на лист (у up и down,
+ * у диагоналей лист общий); в каждой ячейке от start — рамка по непрозрачным пикселям и опора (низ ног; по x — середина
+ * головы, верхние 12% фигуры). Кадры — `<m>0…`.
  */
 function motionFrames(scene: Phaser.Scene, m: Motion): Rect[] {
   if (found[m]) return found[m]!;
@@ -162,13 +206,58 @@ function motionFrames(scene: Phaser.Scene, m: Motion): Rect[] {
   const src = scene.textures.get(S.key).getSourceImage() as HTMLImageElement;
   const W = src.width;
   const Hh = src.height;
-  const t = scene.textures.exists(key) ? (scene.textures.get(key) as Phaser.Textures.CanvasTexture) : scene.textures.createCanvas(key, W, Hh)!;
+  const shared = scene.textures.exists(key);
+  const t = shared ? (scene.textures.get(key) as Phaser.Textures.CanvasTexture) : scene.textures.createCanvas(key, W, Hh)!;
   const c = t.getContext();
+  if (!shared) {
+    cutBackground(c, src, W, Hh);
+    t.refresh();
+  }
+  const d = c.getImageData(0, 0, W, Hh).data;
+  // Рамки и опоры по ячейкам.
+  const cw = W / S.cols;
+  const ch = Hh / S.rows;
+  const rects: Rect[] = [];
+  for (let k = 0; k < S.count; k++) {
+    const n = S.start + k;
+    const cx0 = Math.round((n % S.cols) * cw);
+    const cy0 = Math.round(Math.floor(n / S.cols) * ch);
+    const cx1 = Math.round(cx0 + cw);
+    const cy1 = Math.round(cy0 + ch);
+    let x0 = cx1, y0 = cy1, x1 = cx0, y1 = cy0;
+    for (let y = cy0; y < cy1; y++)
+      for (let x = cx0; x < cx1; x++)
+        if (d[(y * W + x) * 4 + 3] > 40) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+    // Середина головы: средний x непрозрачных пикселей в верхних 12% фигуры.
+    const headBottom = y0 + Math.max(4, Math.round((y1 - y0) * 0.12));
+    let sx = 0, sn = 0;
+    for (let y = y0; y <= headBottom; y++)
+      for (let x = x0; x <= x1; x++)
+        if (d[(y * W + x) * 4 + 3] > 40) {
+          sx += x;
+          sn++;
+        }
+    const px = sn ? sx / sn : (x0 + x1) / 2;
+    const r: Rect = [x0, y0, x1 - x0 + 1, y1 - y0 + 1, px, y1 + 1];
+    rects.push(r);
+    if (!t.has(`${m}${k}`)) t.add(`${m}${k}`, 0, r[0], r[1], r[2], r[3]);
+  }
+  t.firstFrame = '__BASE';
+  found[m] = rects;
+  return rects;
+}
+
+/** Белый фон листа — в прозрачность: заливка от краёв по почти белым пикселям (белое внутри фигуры не трогается), мягкий край. */
+function cutBackground(c: CanvasRenderingContext2D, src: HTMLImageElement, W: number, Hh: number): void {
   c.clearRect(0, 0, W, Hh);
   c.drawImage(src, 0, 0);
   const img = c.getImageData(0, 0, W, Hh);
   const d = img.data;
-  // Белый фон: заливка от краёв листа по почти белым непрозрачным пикселям (белое внутри фигуры — воротник — не трогается).
   const bright = (i: number) => d[i * 4 + 3] > 0 && Math.min(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]) > 232;
   const bg = new Uint8Array(W * Hh);
   const stack: number[] = [];
@@ -197,40 +286,4 @@ function motionFrames(scene: Phaser.Scene, m: Motion): Rect[] {
     }
   }
   c.putImageData(img, 0, 0);
-  t.refresh();
-  // Рамки и опоры по ячейкам.
-  const cw = W / S.cols;
-  const ch = Hh / S.rows;
-  const rects: Rect[] = [];
-  for (let n = 0; n < S.count; n++) {
-    const cx0 = Math.round((n % S.cols) * cw);
-    const cy0 = Math.round(Math.floor(n / S.cols) * ch);
-    const cx1 = Math.round(cx0 + cw);
-    const cy1 = Math.round(cy0 + ch);
-    let x0 = cx1, y0 = cy1, x1 = cx0, y1 = cy0;
-    for (let y = cy0; y < cy1; y++)
-      for (let x = cx0; x < cx1; x++)
-        if (d[(y * W + x) * 4 + 3] > 40) {
-          if (x < x0) x0 = x;
-          if (x > x1) x1 = x;
-          if (y < y0) y0 = y;
-          if (y > y1) y1 = y;
-        }
-    // Середина головы: средний x непрозрачных пикселей в верхних 12% фигуры.
-    const headBottom = y0 + Math.max(4, Math.round((y1 - y0) * 0.12));
-    let sx = 0, sn = 0;
-    for (let y = y0; y <= headBottom; y++)
-      for (let x = x0; x <= x1; x++)
-        if (d[(y * W + x) * 4 + 3] > 40) {
-          sx += x;
-          sn++;
-        }
-    const px = sn ? sx / sn : (x0 + x1) / 2;
-    const r: Rect = [x0, y0, x1 - x0 + 1, y1 - y0 + 1, px, y1 + 1];
-    rects.push(r);
-    if (!t.has(`${m}${n}`)) t.add(`${m}${n}`, 0, r[0], r[1], r[2], r[3]);
-  }
-  t.firstFrame = '__BASE';
-  found[m] = rects;
-  return rects;
 }

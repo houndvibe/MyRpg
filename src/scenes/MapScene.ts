@@ -36,6 +36,7 @@ import { CANDLES_UNLOCK_AT, CARRIAGE, ROOM_IDS, ROOMS, TRIBUTE_FORGIVEN, type Sl
 import { WORLD_NODES } from '../data/world';
 import { actionCost, addItem, canAddItem, canTakeRoom, qtePool, run, sleep, spendCandles, unlockCandles } from '../state';
 import { insidePoly, locationGraph, routeLength, worldGraph, type Leg, type MapGraph, type MapPos, type Pt } from '../systems/map';
+import { NavGrid } from '../systems/navgrid';
 import { addText, C, H, playGameMusic, W, walkCursor, type MusicTrack } from '../ui';
 
 /** Узел-метка на карте: точка интереса локации или локация на карте мира (координаты — пиксели подложки). */
@@ -87,13 +88,22 @@ export class MapScene extends Phaser.Scene {
   /** Мини-карта на Tab (только у карт с MapView.minimap) и здания, открытые по контуру, — для её тумана. */
   private minimap: Minimap | null = null;
   private fogShapes: { x: number; y: number; shape: FogShape }[] = [];
-  /** Свободный ход в лесу: куда идёт по клику (пиксели подложки), что потом (выйдя на тропу — идти туда по дорогам). */
+  /**
+   * Свободный ход в зоне: конечная точка (пиксели подложки), оставшиеся точки пути в обход преград, в какую точку карты
+   * пришёл (null — просто место), через какие ворота выйти на тропу и что потом (идти туда по дорогам).
+   */
   private freeGoal: Pt | null = null;
+  private freePath: Pt[] = [];
+  private freePoi: PoiId | null = null;
+  private freeGate: Gate | null = null;
   private freeThen: MapPos | null = null;
-  /** Идёт по дорогам к краю леса, чтобы дальше по прямой в лес к этой точке. */
-  private pendingFree: Pt | null = null;
-  /** Сколько мс идёт по клику в лесу, почти не двигаясь (упёрся). */
-  private freeStuck = 0;
+  /** Идёт по дорогам к воротам зоны, чтобы дальше по зоне к этой точке (и, если задано, в эту точку карты). */
+  private pendingFree: { pt: Pt; poi: PoiId | null } | null = null;
+  /** Сетка поиска пути в зоне (null — у карты нет зон) и ворота — где тропы пересекают край зоны. */
+  private nav: NavGrid | null = null;
+  /** В какую сторону скользил вдоль преграды в прошлый раз (+1 / −1). */
+  private slideSide = 1;
+  private gates: Gate[] = [];
   private dust!: Phaser.GameObjects.Particles.ParticleEmitter;
   private routeLine!: Phaser.GameObjects.Graphics;
   private ring!: Phaser.GameObjects.Arc;
@@ -221,94 +231,163 @@ export class MapScene extends Phaser.Scene {
     return this.zones.some((z) => insidePoly(p, z));
   }
 
-  /** Расстояние от точки до ближайшей зоны (0 — внутри), пиксели подложки. */
-  private zoneDist(p: Pt): number {
-    let best = Infinity;
-    for (const z of this.zones) {
-      if (insidePoly(p, z)) return 0;
-      for (let i = 0, j = z.length - 1; i < z.length; j = i++) {
-        const [ax, ay] = z[j];
-        const [bx, by] = z[i];
-        const len2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
-        const t = Math.min(1, Math.max(0, ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / len2));
-        best = Math.min(best, Math.hypot(ax + (bx - ax) * t - p.x, ay + (by - ay) * t - p.y));
-      }
-    }
-    return best;
-  }
-
   /** Где стоит герой — точка подложки (в лесу, в узле или на дороге). */
   private heroPoint(): Pt {
     return run.mapFree ? { ...run.mapFree } : this.graph.pointAt(this.herePos);
   }
 
-  /** Можно стоять: в лесу или у его края возле тропы (полоса exitDist — переход между лесом и тропой). */
-  private freeOk(p: Pt): boolean {
-    const F = FEEL.map.forest;
-    return this.inZone(p) || (this.zoneDist(p) <= F.exitDist && this.graph.nearestOnRoad(p).dist <= F.exitDist);
+  /** Преграды зон текущей карты. */
+  private get blocks(): [number, number][][] {
+    return this.isWorld ? [] : (LOCATIONS[run.location].blocks ?? []);
   }
 
-  /** Стволы: точка выталкивается из круга ствола (герой скользит вдоль), задетое дерево качается. */
-  private pushOffTrunks(n: Pt): Pt {
-    const F = FEEL.map.forest;
-    let q = n;
-    for (const t of this.occl.trunks) {
-      const dx = q.x - t.x;
-      const dy = q.y - t.y;
-      const d = Math.hypot(dx, dy);
-      const R = t.r + F.heroR;
-      if (d < R + F.touch) this.occl.shake(t.i, q.x);
-      if (d < R) q = d > 1e-3 ? { x: t.x + (dx / d) * R, y: t.y + (dy / d) * R } : { x: t.x + R, y: t.y };
+  /** Точка в преграде или ближе margin к её краю. */
+  private inBlock(p: Pt, margin: number): boolean {
+    for (const poly of this.blocks) {
+      if (insidePoly(p, poly)) return true;
+      if (margin > 0 && polyDist(p, poly) < margin) return true;
     }
-    return q;
+    return false;
+  }
+
+  /** Тропки вплотную к преградам текущей карты. */
+  private get walks(): [number, number][][] {
+    return this.isWorld ? [] : (LOCATIONS[run.location].walks ?? []);
+  }
+
+  /** Можно стоять: внутри зоны и на тропке вплотную (walks) — всегда; иначе не в преграде (с запасом на радиус героя) и не в стволе. */
+  private freeOk(p: Pt): boolean {
+    const F = FEEL.map.forest;
+    if (!this.inZone(p)) return false;
+    if (this.walks.some((w) => lineDist(p, w) <= F.walkR)) return true;
+    if (this.inBlock(p, F.heroR)) return false;
+    for (const t of this.occl.trunks) if (Math.hypot(p.x - t.x, p.y - t.y) < t.r + F.heroR) return false;
+    return true;
+  }
+
+  /** Сетка пути по зонам и ворота: места, где тропа пересекает край зоны (точка ворот — проходимая, чуть внутри). */
+  private buildNav(): void {
+    this.nav = null;
+    this.gates = [];
+    if (!this.zones.length) return;
+    const xs = this.zones.flat().map((p) => p[0]);
+    const ys = this.zones.flat().map((p) => p[1]);
+    this.nav = new NavGrid((p) => this.freeOk(p), { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }, FEEL.map.forest.navCell);
+    const step = 3;
+    for (let road = 0; road < this.graph.roadCount; road++) {
+      const L = this.graph.roadLength(road);
+      let prev = this.inZone(this.graph.pointOnRoad(road, 0));
+      for (let d = step; d <= L + step - 1e-6; d += step) {
+        const dd = Math.min(d, L);
+        const cur = this.inZone(this.graph.pointOnRoad(road, dd));
+        if (cur !== prev) {
+          // Снаружи — место на тропе у края; внутри — ближайшее проходимое место чуть вглубь зоны.
+          const out = cur ? dd - step : dd;
+          const inside = cur ? Math.min(L, dd + 6) : Math.max(0, dd - step - 6);
+          const pt = this.nav.nearest(this.graph.pointOnRoad(road, inside));
+          if (pt) this.gates.push({ road, d: Math.max(0, Math.min(L, out)), pt });
+        }
+        prev = cur;
+      }
+    }
+  }
+
+  /** Герой стоит в зоне на тропе или в точке — переходит в свободный ход (тропы внутри зоны — просто земля). */
+  private enterFree(): void {
+    if (run.mapFree || this.isWorld || !this.nav) return;
+    const p = this.heroPoint();
+    if (!this.inZone(p)) return;
+    const q = this.nav.nearest(p) ?? p;
+    run.mapFree = { x: q.x, y: q.y };
+    run.mapRoad = null;
+  }
+
+  /** Стволы: задетое дерево качается (сам ход их обходит — freeOk). */
+  private touchTrunks(n: Pt): void {
+    const F = FEEL.map.forest;
+    for (const t of this.occl.trunks) if (Math.hypot(n.x - t.x, n.y - t.y) < t.r + F.heroR + F.touch) this.occl.shake(t.i, n.x);
   }
 
   /**
-   * Шаг в лесу в сторону v (единичный вектор) на len px подложки: стволы обходятся, у края — скольжение вдоль или стоп.
-   * allowExit — у тропы шаг к ней выводит на тропу (клавиши). Возвращает пройденное и вышел ли на тропу.
+   * Шаг в зоне в сторону v (единичный вектор) на len px подложки (клавиши): у преграды или края — скольжение вдоль или стоп.
+   * allowExit — у ворот шаг наружу выводит на тропу. Возвращает пройденное и вышел ли на тропу.
    */
   private freeMove(v: Pt, len: number, allowExit: boolean): { moved: number; exited: boolean } {
     const p = run.mapFree!;
-    let n = this.pushOffTrunks({ x: p.x + v.x * len, y: p.y + v.y * len });
-    if (!this.freeOk(n)) {
-      const a = this.pushOffTrunks({ x: p.x + v.x * len, y: p.y });
-      const b = this.pushOffTrunks({ x: p.x, y: p.y + v.y * len });
-      n = Math.abs(v.x) > 0.2 && this.freeOk(a) ? a : Math.abs(v.y) > 0.2 && this.freeOk(b) ? b : p;
-    }
-    const moved = Math.hypot(n.x - p.x, n.y - p.y);
-    // У самой тропы и подходя к ней (тропа идёт по краю леса, местами — внутри зоны) — шаг на тропу.
-    if (allowExit) {
-      const near = this.graph.nearestOnRoad(n);
-      if (near.dist <= FEEL.map.forest.snap && near.dist < this.graph.nearestOnRoad(p).dist) {
-        this.leaveForest(near);
-        return { moved, exited: true };
+    const raw = { x: p.x + v.x * len, y: p.y + v.y * len };
+    // У ворот шаг за край зоны — на тропу.
+    if (allowExit && !this.inZone(raw)) {
+      const gate = this.gates.find((g) => Math.hypot(g.pt.x - p.x, g.pt.y - p.y) <= FEEL.map.forest.gateR);
+      if (gate) {
+        this.leaveForest(gate);
+        return { moved: len, exited: true };
       }
     }
-    run.mapFree = { x: n.x, y: n.y };
-    this.hero.setPosition(n.x * this.k, n.y * this.k);
-    if (this.fog?.reveal(n.x, n.y)) this.refreshMarkers();
+    let n = raw;
+    if (!this.freeOk(n)) n = this.slide(p, v, len);
+    this.touchTrunks(raw);
+    const moved = Math.hypot(n.x - p.x, n.y - p.y);
+    this.placeFree(n);
     return { moved, exited: false };
   }
 
-  /** Из леса на тропу — в место near (дорога и расстояние от её начала). */
-  private leaveForest(near: { road: number; d: number }): void {
+  /**
+   * Упёрся (клавиши): направление поворачивается вдоль края преграды шагами slideDeg (до 90°) в обе стороны — первое
+   * свободное и есть скольжение; шаг вбок короче на косинус угла, но не меньше доли slideMin (в стену в лоб — ведёт вдоль неё). Сторона, куда скользил, запоминается (без дрожи на углах).
+   */
+  private slide(p: Pt, v: Pt, len: number): Pt {
+    const step = FEEL.map.forest.slideDeg;
+    for (let a = step; a <= 90; a += step) {
+      const rad = (a * Math.PI) / 180;
+      const k = Math.max(Math.cos(rad), FEEL.map.forest.slideMin) * len;
+      for (const side of [this.slideSide, -this.slideSide]) {
+        const c = Math.cos(rad * side);
+        const sn = Math.sin(rad * side);
+        const n = { x: p.x + (v.x * c - v.y * sn) * k, y: p.y + (v.x * sn + v.y * c) * k };
+        if (this.freeOk(n)) {
+          this.slideSide = side;
+          return n;
+        }
+      }
+    }
+    return p;
+  }
+
+  /** Герой в зоне в точке n: позиция, туман. */
+  private placeFree(n: Pt): void {
+    run.mapFree = { x: n.x, y: n.y };
+    this.hero.setPosition(n.x * this.k, n.y * this.k);
+    if (this.fog?.reveal(n.x, n.y)) this.refreshMarkers();
+  }
+
+  /** Из зоны на тропу через ворота. */
+  private leaveForest(gate: Gate): void {
     run.mapFree = null;
-    this.storePos({ road: near.road, d: near.d });
-    const pt = this.graph.pointOnRoad(near.road, near.d);
+    this.storePos({ road: gate.road, d: gate.d });
+    const pt = this.graph.pointOnRoad(gate.road, gate.d);
     this.hero.setPosition(pt.x * this.k, pt.y * this.k);
   }
 
-  /** Пойти по прямой по лесу к точке goal (пиксели подложки); then — потом, выйдя на тропу, идти туда по дорогам. */
-  private startFreeWalk(goal: Pt, then: MapPos | null): void {
+  /**
+   * Пойти по зоне к точке goal (пиксели подложки) в обход преград: poi — потом встать в эту точку карты (меню);
+   * gate и then — выйти через эти ворота на тропу и идти по дорогам к then.
+   */
+  private startFreeWalk(goal: Pt, poi: PoiId | null, gate: Gate | null = null, then: MapPos | null = null): void {
     this.closeSidebar();
-    this.freeGoal = goal;
+    const from = run.mapFree!;
+    const to = gate ? gate.pt : goal;
+    const path = this.nav?.findPath(from, to) ?? null;
+    if (!path) return;
+    this.freeGoal = path[path.length - 1];
+    this.freePath = path;
+    this.freePoi = poi;
+    this.freeGate = gate;
     this.freeThen = then;
-    this.freeStuck = 0;
     this.velocity = { x: 0, y: 0 };
     this.zoomAnchor = null;
     this.following = true;
     this.cameras.main.startFollow(this.hero, false, FEEL.map.followLerp, FEEL.map.followLerp);
-    const ring = then ? this.graph.pointAt(then) : goal;
+    const ring = then ? this.graph.pointAt(then) : poi ? this.graph.nodePoint(poi) : this.freeGoal;
     this.ring.setPosition(ring.x * this.k, ring.y * this.k).setVisible(true);
     this.figure.setWalking(true);
     this.dust.emitting = true;
@@ -316,53 +395,92 @@ export class MapScene extends Phaser.Scene {
     this.refreshLocation();
   }
 
-  /** Кадр хода по клику в лесу. Возвращает сдвиг по x. */
+  /** Кадр хода по клику в зоне: по точкам пути. Возвращает сдвиг по x. */
   private freeWalk(delta: number): number {
-    const g = this.freeGoal!;
-    const p = run.mapFree!;
     const x0 = this.hero.x;
-    const step = (this.walkSpeed / this.k) * (delta / 1000);
-    const dist = Math.hypot(g.x - p.x, g.y - p.y);
-    if (dist <= step) {
-      this.freeMove({ x: (g.x - p.x) / (dist || 1), y: (g.y - p.y) / (dist || 1) }, dist, false);
-      this.arriveFree();
-    } else {
-      const r = this.freeMove({ x: (g.x - p.x) / dist, y: (g.y - p.y) / dist }, step, false);
-      // Упёрся (ствол, край зоны) — постоял немного и встал.
-      this.freeStuck = r.moved < step * 0.3 ? this.freeStuck + delta : 0;
-      if (this.freeStuck > FEEL.map.forest.stuckMs) this.arriveFree();
+    let left = (this.walkSpeed / this.k) * (delta / 1000);
+    let p = run.mapFree!;
+    while (left > 0 && this.freePath.length) {
+      const q = this.freePath[0];
+      const d = Math.hypot(q.x - p.x, q.y - p.y);
+      if (d <= left) {
+        p = q;
+        left -= d;
+        this.freePath.shift();
+      } else {
+        p = { x: p.x + ((q.x - p.x) / d) * left, y: p.y + ((q.y - p.y) / d) * left };
+        left = 0;
+      }
     }
+    this.placeFree(p);
+    if (!this.freePath.length) this.arriveFree();
     return this.hero.x - x0;
   }
 
-  /** Дошёл по лесу (или упёрся): стоит; если дальше путь по дорогам — выходит на ближайшую тропу и идёт. */
+  /** Дошёл по зоне: в точку карты — меню; к воротам — на тропу и дальше по дорогам; иначе стоит. */
   private arriveFree(): void {
-    const then = this.freeThen;
+    const { freeGate: gate, freeThen: then, freePoi: poi } = this;
     this.freeGoal = null;
+    this.freePath = [];
+    this.freePoi = null;
+    this.freeGate = null;
     this.freeThen = null;
     this.ring.setVisible(false);
     this.figure.setWalking(false);
     this.dust.emitting = false;
-    if (then && run.mapFree) {
-      this.leaveForest(this.graph.nearestOnRoad(run.mapFree));
-      this.go(then);
-      return;
+    if (gate) {
+      this.leaveForest(gate);
+      if (then) return this.go(then);
+    } else if (poi) {
+      run.mapFree = null;
+      this.target = poi;
+      this.targetRoad = null;
+      return this.arriveAt();
     }
     this.refreshMarkers();
     this.refreshLocation();
   }
 
-  /** Клик по лесу: в лесу — по прямой туда; на тропе — по дорогам к ближайшему к точке месту тропы, оттуда — в лес. */
-  private goFree(pt: Pt): void {
-    if (this.target) {
-      this.storePos(this.graph.alongRoute(this.legs, this.walked).pos);
-      this.target = null;
-      this.targetRoad = null;
-      this.legs = [];
+  /** Бросить идущий путь по дорогам: герой остаётся там, где был. */
+  private dropRoute(): void {
+    if (!this.target) return;
+    this.storePos(this.graph.alongRoute(this.legs, this.walked).pos);
+    this.target = null;
+    this.targetRoad = null;
+    this.legs = [];
+  }
+
+  /** Ворота, через которые короче всего: длина score(gate) — путь по зоне + путь по дорогам. */
+  private bestGate(score: (g: Gate) => number): Gate | null {
+    let best: Gate | null = null;
+    let bs = Infinity;
+    for (const g of this.gates) {
+      const sc = score(g);
+      if (sc < bs) {
+        bs = sc;
+        best = g;
+      }
     }
-    if (run.mapFree) return this.startFreeWalk(pt, null);
-    const near = this.graph.nearestOnRoad(pt);
-    this.go({ road: near.road, d: near.d }, pt);
+    return best;
+  }
+
+  /** Длина пути по зоне от a до b (Infinity — не дойти). */
+  private zoneLen(a: Pt, b: Pt): number {
+    const path = this.nav?.findPath(a, b);
+    return path ? NavGrid.pathLength(a, path) : Infinity;
+  }
+
+  /**
+   * Пойти в место зоны pt (клик по земле зоны или по точке карты в зоне — poi): в зоне — в обход преград;
+   * с тропы снаружи — по дорогам к лучшим воротам, оттуда по зоне.
+   */
+  private goZone(pt: Pt, poi: PoiId | null): void {
+    this.dropRoute();
+    this.enterFree();
+    if (run.mapFree) return this.startFreeWalk(pt, poi);
+    const from = this.herePos;
+    const gate = this.bestGate((g) => routeLength(this.graph.routeTo(from, { road: g.road, d: g.d })) + this.zoneLen(g.pt, pt));
+    if (gate) this.go({ road: gate.road, d: gate.d }, { pt, poi });
   }
 
   private nodeName(id: string): string {
@@ -435,8 +553,13 @@ export class MapScene extends Phaser.Scene {
       }
     }
     this.freeGoal = null;
+    this.freePath = [];
+    this.freePoi = null;
+    this.freeGate = null;
     this.freeThen = null;
     this.pendingFree = null;
+    // Зоны свободного хода: сетка пути и ворота на тропы (после заслонов — стволы деревьев тоже преграды).
+    this.buildNav();
 
     this.routeLine = this.add.graphics().setDepth(5);
     this.ring = this.add.circle(0, 0, F.ringRadius).setStrokeStyle(4, F.routeColor, 1).setDepth(6).setVisible(false);
@@ -577,12 +700,12 @@ export class MapScene extends Phaser.Scene {
     let route: Pt[] = [];
     let goal: Pt | null = null;
     if (this.freeGoal) {
-      route = [hero, this.freeGoal];
+      route = [hero, ...this.freePath];
       goal = this.freeThen ? this.graph.pointAt(this.freeThen) : this.freeGoal;
     } else if (this.target) {
       route = this.graph.remainingPoints(this.legs, this.walked);
-      if (this.pendingFree) route.push(this.pendingFree);
-      goal = this.pendingFree ?? (this.targetRoad ? this.graph.pointOnRoad(this.targetRoad.road, this.targetRoad.d) : this.graph.nodePoint(this.target));
+      if (this.pendingFree) route.push(this.pendingFree.pt);
+      goal = this.pendingFree?.pt ?? (this.targetRoad ? this.graph.pointOnRoad(this.targetRoad.road, this.targetRoad.d) : this.graph.nodePoint(this.target));
     }
     mm.update(delta, shown, hero, this.fog ? this.fog.openPoints : null, this.fogShapes, (x, y) => !this.fog || this.fog.isOpen(x, y), route, goal);
   }
@@ -967,6 +1090,9 @@ export class MapScene extends Phaser.Scene {
     this.pendingFree = null;
     if (this.freeGoal) {
       this.freeGoal = null;
+      this.freePath = [];
+      this.freePoi = null;
+      this.freeGate = null;
       this.freeThen = null;
       this.ring.setVisible(false);
     }
@@ -989,7 +1115,8 @@ export class MapScene extends Phaser.Scene {
       this.refreshLocation();
     }
     const len = (this.walkSpeed / this.k) * (delta / 1000);
-    // В лесу — свободно в сторону клавиш.
+    // В зоне (или стоит в зоне на тропе / в точке) — свободно в сторону клавиш.
+    this.enterFree();
     if (run.mapFree) {
       const x0 = this.hero.x;
       const r = this.freeMove(v, len, true);
@@ -999,21 +1126,17 @@ export class MapScene extends Phaser.Scene {
       if (r.exited) this.refreshLocation();
       return this.hero.x - x0;
     }
-    const p0 = this.graph.pointAt(this.herePos);
+    const p0Pos = this.herePos;
     const res = this.graph.steer(this.herePos, this.keySign, v, len, Kf.look, Kf.minDot, Kf.keepDot);
-    // С тропы в лес: впереди по клавишам — лес, а тропа туда не ведёт (стоит или уходит в сторону) — сворачиваем.
-    if (this.zones.length) {
-      const F = FEEL.map.forest;
-      const q = { x: p0.x + v.x * F.enterLook, y: p0.y + v.y * F.enterLook };
-      const p1 = this.graph.pointAt(res.pos);
-      const mv = Math.hypot(p1.x - p0.x, p1.y - p0.y);
-      const along = mv > 1e-6 ? ((p1.x - p0.x) * v.x + (p1.y - p0.y) * v.y) / mv : 0;
-      if (this.inZone(q) && (mv < len * 0.5 || along < 0.6)) {
-        run.mapFree = { x: p0.x, y: p0.y };
-        run.mapRoad = null;
+    // С тропы в зону: шаг по тропе зашёл внутрь зоны — дальше свободно (тропа внутри зоны — просто земля).
+    if (this.nav && this.inZone(this.graph.pointAt(res.pos))) {
+      this.storePos(res.pos);
+      this.enterFree();
+      if (run.mapFree) {
+        this.placeFree(run.mapFree);
         this.refreshMarkers();
         this.refreshLocation();
-        return this.keyWalk(v, delta);
+        return this.hero.x - this.graph.pointAt(p0Pos).x * this.k;
       }
     }
     this.keySign = res.sign;
@@ -1035,6 +1158,15 @@ export class MapScene extends Phaser.Scene {
     this.figure.setWalking(false);
     this.dust.emitting = false;
     if (run.mapFree) {
+      // Отпустил клавиши рядом с точкой карты в зоне — встаёт в неё (меню).
+      const p = run.mapFree;
+      const poi = poisOf(run.location).find((id) => Math.hypot(POIS[id].x - p.x, POIS[id].y - p.y) <= FEEL.map.forest.poiSnap);
+      if (poi) {
+        run.mapFree = null;
+        this.target = poi;
+        this.targetRoad = null;
+        return this.arriveAt();
+      }
       this.refreshMarkers();
       this.refreshLocation();
       return;
@@ -1091,6 +1223,8 @@ export class MapScene extends Phaser.Scene {
     this.applyZoom(delta);
 
     let dx = 0;
+    // Сдвиг героя за кадр по вертикали — по месту до и после хода (фигурке нужно направление: вверх, вниз, диагональ).
+    const y0 = this.hero.y;
     const v = this.keyDir();
     if (v) dx = this.keyWalk(v, delta);
     else if (this.keyWalking) this.keyStop();
@@ -1110,8 +1244,8 @@ export class MapScene extends Phaser.Scene {
     if (this.figure instanceof MapHero) {
       this.figure.setRunning(!!this.shift?.isDown);
       this.figure.aimLight(this.hero.x / this.k, this.hero.y / this.k);
-    }
-    this.figure.update(delta, dx);
+      this.figure.update(delta, dx, this.hero.y - y0);
+    } else this.figure.update(delta, dx);
     this.occl.update(delta, this.hero, this.dust, FEEL.map.hero.height, this.figure.sprite);
     this.dialog?.update(delta);
     this.qte?.update(delta);
@@ -1224,16 +1358,24 @@ export class MapScene extends Phaser.Scene {
 
   /** Пойти к узлу. */
   private travel(id: string): void {
+    // Точка карты внутри зоны свободного хода — идти туда по зоне (если уже стоит в ней — меню).
+    if (!this.isWorld && id in POIS && this.inZone(POIS[id as PoiId])) {
+      if (!this.target && !this.onRoad && !run.mapFree && id === this.here) return this.openSidebar();
+      return this.goZone(POIS[id as PoiId], id as PoiId);
+    }
     this.go({ node: id });
   }
 
   /** Пойти к узлу или месту на дороге: маршрут считается от того места, где герой сейчас (в узле или посреди дороги). */
-  private go(dest: MapPos, free: Pt | null = null): void {
+  private go(dest: MapPos, free: { pt: Pt; poi: PoiId | null } | null = null): void {
     this.pendingFree = free;
-    // В лесу — сперва по прямой к ближайшей тропе, оттуда — по дорогам.
+    // В зоне — по зоне к лучшим воротам (путь по зоне + по дорогам), оттуда — по дорогам.
+    if (!free) this.enterFree();
     if (run.mapFree) {
-      const near = this.graph.nearestOnRoad(run.mapFree);
-      return this.startFreeWalk(this.graph.pointOnRoad(near.road, near.d), dest);
+      const p = run.mapFree;
+      const gate = this.bestGate((g) => this.zoneLen(p, g.pt) + routeLength(this.graph.routeTo({ road: g.road, d: g.d }, dest)));
+      if (gate) return this.startFreeWalk(gate.pt, null, gate, dest);
+      return;
     }
     const from: MapPos = this.target ? this.graph.alongRoute(this.legs, this.walked).pos : this.herePos;
     // Уже здесь — открыть окно точки, если оно есть.
@@ -1248,7 +1390,7 @@ export class MapScene extends Phaser.Scene {
     this.zoomAnchor = null;
     this.following = true;
     this.cameras.main.startFollow(this.hero, false, FEEL.map.followLerp, FEEL.map.followLerp);
-    const p = free ?? this.graph.pointAt(dest);
+    const p = free?.pt ?? this.graph.pointAt(dest);
     this.ring.setPosition(p.x * this.k, p.y * this.k).setVisible(true);
     this.dust.emitting = true;
     this.figure.setWalking(true);
@@ -1271,12 +1413,13 @@ export class MapScene extends Phaser.Scene {
     this.arrivalWave(p.x * this.k, p.y * this.k);
     if (this.fog?.reveal(p.x, p.y)) this.refreshMarkers();
     if (road && this.pendingFree) {
-      // Дошли по тропе до края леса — дальше по прямой в лес.
-      const goal = this.pendingFree;
+      // Дошли по тропе до ворот зоны — дальше по зоне в обход преград.
+      const { pt, poi } = this.pendingFree;
       this.pendingFree = null;
       run.mapRoad = null;
-      run.mapFree = { x: p.x, y: p.y };
-      this.startFreeWalk(goal, null);
+      const q = this.nav?.nearest(p) ?? p;
+      this.placeFree(q);
+      this.startFreeWalk(pt, poi);
       return;
     }
     if (road) {
@@ -1321,8 +1464,8 @@ export class MapScene extends Phaser.Scene {
     const color = FEEL.map.routeColor;
     const g = this.routeLine.clear();
     if (!this.target && !this.freeGoal) return;
-    const pts = this.freeGoal ? [{ x: this.hero.x, y: this.hero.y }, { x: this.freeGoal.x * this.k, y: this.freeGoal.y * this.k }] : this.graph.remainingPoints(this.legs, this.walked).map((p) => ({ x: p.x * this.k, y: p.y * this.k }));
-    if (!this.freeGoal && this.pendingFree) pts.push({ x: this.pendingFree.x * this.k, y: this.pendingFree.y * this.k });
+    const pts = this.freeGoal ? [{ x: this.hero.x, y: this.hero.y }, ...this.freePath.map((q) => ({ x: q.x * this.k, y: q.y * this.k }))] : this.graph.remainingPoints(this.legs, this.walked).map((p) => ({ x: p.x * this.k, y: p.y * this.k }));
+    if (!this.freeGoal && this.pendingFree) pts.push({ x: this.pendingFree.pt.x * this.k, y: this.pendingFree.pt.y * this.k });
     if (pts.length < 2) return;
     const inv = 1 / this.cameras.main.zoom;
     const step = R.step * inv;
@@ -1381,7 +1524,7 @@ export class MapScene extends Phaser.Scene {
     this.setHover(ui ? null : this.nodeAt(w.x, w.y));
     // Подсветка здания под мышью (заслоны с hover, уже открытые из-под тумана).
     const overBuilding = this.occl.hoverAt(ui || this.isWorld ? null : { x: w.x / this.k, y: w.y / this.k }, (x, y) => !this.fog || this.fog.isOpen(x, y)) && !!this.occl.hoveredPoi;
-    this.input.setDefaultCursor(!ui && (this.hovered || overBuilding || this.roadAt(w.x, w.y) || this.forestAt(w.x, w.y)) ? walkCursor() : 'default');
+    this.input.setDefaultCursor(!ui && (this.hovered || overBuilding || this.forestAt(w.x, w.y, true) || this.roadAt(w.x, w.y)) ? walkCursor() : 'default');
   }
 
   private onUp(p: Phaser.Input.Pointer): void {
@@ -1399,16 +1542,21 @@ export class MapScene extends Phaser.Scene {
     if (id) return this.travel(id);
     // Клик по зданию (заслон с poi, открытый из-под тумана) — идти в его точку; здание закрывает дороги за ним.
     if (!this.isWorld && this.occl.hoverAt({ x: w.x / this.k, y: w.y / this.k }, (x, y) => !this.fog || this.fog.isOpen(x, y)) && this.occl.hoveredPoi) return this.travel(this.occl.hoveredPoi);
+    // Земля зоны свободного хода (тропы в ней — тоже земля); клик в преграду — к ближайшему доступному месту.
+    const free = this.forestAt(w.x, w.y);
+    if (free) return this.goZone(free, null);
     const road = this.roadAt(w.x, w.y);
     if (road) return this.go(road);
-    const free = this.forestAt(w.x, w.y);
-    if (free) this.goFree(free);
   }
 
-  /** Место в лесу под курсором (точка мира → пиксели подложки): внутри зоны свободного хода и на открытой части карты. */
-  private forestAt(x: number, y: number): Pt | null {
+  /**
+   * Место в зоне под курсором (точка мира → пиксели подложки): внутри зоны свободного хода и на открытой части карты.
+   * forCursor — для курсора-следа: над преградой его нет.
+   */
+  private forestAt(x: number, y: number, forCursor = false): Pt | null {
     const p = { x: x / this.k, y: y / this.k };
     if (!this.inZone(p) || (this.fog && !this.fog.isOpen(p.x, p.y))) return null;
+    if (forCursor && this.inBlock(p, 0)) return null;
     return p;
   }
 
@@ -1512,4 +1660,37 @@ function candlesWord(n: number): string {
   const m100 = n % 100;
   const w = m10 === 1 && m100 !== 11 ? 'свеча' : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? 'свечи' : 'свечей';
   return `${n} ${w}`;
+}
+
+/** Ворота зоны свободного хода: место на тропе у края зоны (road, d) и проходимая точка чуть внутри (pt). */
+interface Gate {
+  road: number;
+  d: number;
+  pt: Pt;
+}
+
+/** Расстояние от точки до контура многоугольника (пиксели подложки). */
+function polyDist(p: Pt, poly: [number, number][]): number {
+  let best = Infinity;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [ax, ay] = poly[j];
+    const [bx, by] = poly[i];
+    const len2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
+    const t = Math.min(1, Math.max(0, ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / len2));
+    best = Math.min(best, Math.hypot(ax + (bx - ax) * t - p.x, ay + (by - ay) * t - p.y));
+  }
+  return best;
+}
+
+/** Расстояние от точки до ломаной (пиксели подложки). */
+function lineDist(p: Pt, line: [number, number][]): number {
+  let best = Infinity;
+  for (let i = 1; i < line.length; i++) {
+    const [ax, ay] = line[i - 1];
+    const [bx, by] = line[i];
+    const len2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
+    const t = Math.min(1, Math.max(0, ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / len2));
+    best = Math.min(best, Math.hypot(ax + (bx - ax) * t - p.x, ay + (by - ay) * t - p.y));
+  }
+  return best;
 }

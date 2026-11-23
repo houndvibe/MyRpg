@@ -59,6 +59,11 @@ export class MapGraph {
     });
   }
 
+  /** Сколько дорог в графе. */
+  get roadCount(): number {
+    return this.roads.length;
+  }
+
   roadLength(road: number): number {
     return this.cum[road][this.cum[road].length - 1];
   }
