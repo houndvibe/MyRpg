@@ -34,6 +34,8 @@ export interface ItemDef {
    * sword — парированный удар слабее на базовые PARRY_DAMAGE_MULT, без особого эффекта.
    */
   parryPerk?: ParryPerkId;
+  /** Строка в досье сумки (курсивом внизу карточки): опись бесёнка — привирает и язвит. Черновик, правит дизайнер. */
+  flavor?: string;
 }
 
 export type ParryPerkId = 'sword';
@@ -42,10 +44,51 @@ export type ItemTier = 1 | 2 | 3;
 
 export const ITEMS: Record<ItemId, ItemDef> = {
   // Трость с железным наконечником — заменила стальной меч, характеристики те же (по решению дизайнера).
-  cane: { id: 'cane', name: 'Трость', mode: 'passive', category: 'weapon', tags: [], w: 1, h: 3, tier: 1, parryPerk: 'sword' },
-  bread: { id: 'bread', name: 'Краюха хлеба', mode: 'passive', category: 'food', tags: ['heal'], w: 1, h: 1, tier: 1 },
-  healing_elixir: { id: 'healing_elixir', name: 'Лечебный эликсир', mode: 'active', category: 'alchemy', tags: ['elixir'], w: 1, h: 1, tier: 2 },
-  whetstone: { id: 'whetstone', name: 'Точильный камень', mode: 'passive', category: 'amulet', tags: [], w: 1, h: 1, tier: 1 },
+  cane: {
+    id: 'cane',
+    name: 'Трость',
+    mode: 'passive',
+    category: 'weapon',
+    tags: [],
+    w: 1,
+    h: 3,
+    tier: 1,
+    parryPerk: 'sword',
+    flavor: '«Для прогулок», — уверяют его превосходительство. Так и записываю: для прогулок. Тамбовский упырь, впрочем, с тех пор и сам ходит с палочкой.',
+  },
+  bread: {
+    id: 'bread',
+    name: 'Краюха хлеба',
+    mode: 'passive',
+    category: 'food',
+    tags: ['heal'],
+    w: 1,
+    h: 1,
+    tier: 1,
+    flavor: 'Краюха ржаного, казённая, одна штука. В отчёт пойдёт как «провиант на роту». Мелочь, а приятно.',
+  },
+  healing_elixir: {
+    id: 'healing_elixir',
+    name: 'Лечебный эликсир',
+    mode: 'active',
+    category: 'alchemy',
+    tags: ['elixir'],
+    w: 1,
+    h: 1,
+    tier: 2,
+    flavor: 'Склянка от уездного аптекаря. Пахнет полынью и враньём. Помогает, если не нюхать.',
+  },
+  whetstone: {
+    id: 'whetstone',
+    name: 'Точильный камень',
+    mode: 'passive',
+    category: 'amulet',
+    tags: [],
+    w: 1,
+    h: 1,
+    tier: 1,
+    flavor: 'Его превосходительство точат им наконечник трости, а я — перья. Оба, заметьте, исключительно по службе.',
+  },
 };
 
 export const ITEM_IDS = Object.keys(ITEMS) as ItemId[];

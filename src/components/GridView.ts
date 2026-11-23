@@ -42,6 +42,20 @@ export interface GridConfig<T extends Placement> {
   onDropOutside?: (it: T) => void;
   /** Поворот не удался (не помещается) — для звука или подсказки. */
   onChange?: () => void;
+  /**
+   * Перетаскивание (инвентарь): куда сейчас ляжет предмет (col, row, rotated), внутри ли сетки и помещается ли;
+   * null — перетаскивание кончилось. Для предпросмотра соседства и подсказок.
+   */
+  onDrag?: (s: { it: T; col: number; row: number; rotated: boolean; inside: boolean; ok: boolean } | null) => void;
+}
+
+/** Нить соседства между предметами (uid): подпись на плашке, хорошая ли, действует ли. */
+export interface GridLink {
+  from: number;
+  to: number;
+  label: string;
+  good: boolean;
+  inactive: boolean;
 }
 
 interface Piece<T> {
@@ -52,6 +66,8 @@ interface Piece<T> {
   border: Phaser.GameObjects.Rectangle;
   charges: Phaser.GameObjects.Text;
   badges: Phaser.GameObjects.Container;
+  /** Какие метки сейчас нарисованы («хорошие:плохие») — те же не перерисовываются. */
+  badgeKey: string;
   /** Картинка предмета (если есть) — вместо цветной плитки с надписью. */
   img: Phaser.GameObjects.Image | null;
   color: number;
@@ -82,6 +98,10 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
   private drag: Drag<T> | null = null;
   private lastClick = { uid: -1, at: 0 };
   private mainUid: number | null = null;
+  /** Нити соседства и подсветка связанных предметов — поверх предметов. */
+  private links: Phaser.GameObjects.Container;
+  /** Что сейчас нарисовано нитями (те же нити не перерисовываются). */
+  private linksKey = '';
 
   constructor(scene: Phaser.Scene, cfg: GridConfig<T>) {
     super(scene, cfg.x, cfg.y);
@@ -96,7 +116,8 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
       }
     }
     this.ghost = scene.add.rectangle(0, 0, cell, cell, 0x7fd47f, 0.25).setOrigin(0).setVisible(false);
-    this.add([cells, this.ghost]);
+    this.links = scene.add.container(0, 0);
+    this.add([cells, this.ghost, this.links]);
     scene.add.existing(this);
     this.rebuild();
     if (cfg.mode === 'edit') {
@@ -125,6 +146,52 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     this.pieces.clear();
     for (const it of this.cfg.items()) if (it.inGrid) this.pieces.set(it.uid, this.makePiece(it));
     this.setMain(this.mainUid);
+    this.linksKey = '-';
+    this.setLinks(null, []);
+  }
+
+  /**
+   * Нити соседства для предмета uid (наведение): связанные предметы обведены, между центрами — провисающая нить
+   * (золотая — хорошее, красная — плохое, тусклая — не действует) с плашкой-подписью посередине. uid null — убрать.
+   */
+  setLinks(uid: number | null, links: GridLink[]): void {
+    const key = uid === null || !links.length ? '' : `${uid}|${JSON.stringify(links)}`;
+    if (key === this.linksKey) return;
+    this.linksKey = key;
+    this.links.removeAll(true);
+    if (uid === null || !links.length) return;
+    const F = FEEL.map.bag;
+    const { cell } = this.cfg;
+    const center = (p: Piece<T>) => ({ x: p.cont.x + (p.w * cell) / 2, y: p.cont.y + (p.h * cell) / 2 });
+    const color = (l: GridLink) => (l.inactive ? 0x8f889c : l.good ? 0xe0b65a : 0xe06060);
+    const g = this.scene.add.graphics();
+    this.links.add(g);
+    const outlined = new Map<number, number>();
+    const me = this.pieces.get(uid);
+    if (me) outlined.set(uid, 0xece6d6);
+    for (const l of links) {
+      const a = this.pieces.get(l.from);
+      const b = this.pieces.get(l.to);
+      if (!a || !b) continue;
+      outlined.set(l.from === uid ? l.to : l.from, color(l));
+      const p0 = center(a);
+      const p1 = center(b);
+      const len = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+      const mid = new Phaser.Math.Vector2((p0.x + p1.x) / 2, (p0.y + p1.y) / 2 + len * F.link.sag);
+      const curve = new Phaser.Curves.QuadraticBezier(new Phaser.Math.Vector2(p0.x, p0.y), mid, new Phaser.Math.Vector2(p1.x, p1.y));
+      g.lineStyle(F.link.width + 3, 0x000000, 0.45).strokePoints(curve.getPoints(24));
+      g.lineStyle(F.link.width, color(l), l.inactive ? 0.6 : 1).strokePoints(curve.getPoints(24));
+      g.fillStyle(color(l), 1).fillCircle(p1.x, p1.y, F.link.width + 2);
+      const at = curve.getPoint(0.5);
+      const t = addText(this.scene, at.x, at.y, l.label, F.link.label, l.inactive ? C.dim : l.good ? C.accent : C.bad).setOrigin(0.5);
+      const plate = this.scene.add.rectangle(at.x, at.y, t.width + 16, t.height + 6, 0x15110d, 0.88).setStrokeStyle(1.5, color(l), 0.9);
+      this.links.add([plate, t]);
+    }
+    for (const [id, c] of outlined) {
+      const p = this.pieces.get(id)!;
+      g.lineStyle(F.hover.width, c, 0.9).strokeRoundedRect(p.cont.x + 4, p.cont.y + 4, p.w * cell - 8, p.h * cell - 8, 10);
+    }
+    this.bringToTop(this.links);
   }
 
   private makePiece(it: T): Piece<T> {
@@ -162,7 +229,7 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     const badges = this.scene.add.container(0, 0);
     cont.add([bg, ...(img ? [img] : []), shade, label, charges, badges, border]);
     this.add(cont);
-    const piece: Piece<T> = { it, cont, bg, shade, border, charges, badges, img, color: look.color, w, h, main: false, ready: false, disabled: false, removing: false };
+    const piece: Piece<T> = { it, cont, bg, shade, border, charges, badges, img, color: look.color, badgeKey: '', w, h, main: false, ready: false, disabled: false, removing: false };
     if (this.cfg.mode !== 'view' || this.cfg.onHover) {
       cont.setInteractive(new Phaser.Geom.Rectangle(0, 0, pw, ph), Phaser.Geom.Rectangle.Contains);
       if (this.cfg.mode !== 'view') cont.input!.cursor = 'pointer';
@@ -224,7 +291,8 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
   /** Метки соседства в левом нижнем углу: сколько хороших (зелёный) и плохих (красный) эффектов получил предмет. */
   setBadges(uid: number, good: number, bad: number): void {
     const p = this.pieces.get(uid);
-    if (!p) return;
+    if (!p || p.badgeKey === `${good}:${bad}`) return;
+    p.badgeKey = `${good}:${bad}`;
     p.badges.removeAll(true);
     const r = Math.round(this.cfg.cell * 0.13);
     let x = 6 + r;
@@ -298,6 +366,7 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
       if (Math.hypot(p.x - d.downX, p.y - d.downY) < FEEL.dragThreshold) return;
       d.started = true;
       this.cfg.onHover?.(null);
+      this.setLinks(null, []);
       d.piece.cont.setDepth(10);
       this.bringToTop(d.piece.cont);
     }
@@ -324,9 +393,11 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     const t = this.target();
     if (this.outside(p)) {
       this.ghost.setVisible(false);
+      this.cfg.onDrag?.({ it: d.piece.it, col: t.col, row: t.row, rotated: d.rotated, inside: false, ok: false });
       return;
     }
     const ok = this.cfg.canPlace?.(d.piece.it, t.col, t.row, d.rotated) ?? false;
+    this.cfg.onDrag?.({ it: d.piece.it, col: t.col, row: t.row, rotated: d.rotated, inside: true, ok });
     this.ghost
       .setVisible(true)
       .setPosition(t.col * cell, t.row * cell)
@@ -344,6 +415,7 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
     }
     const t = this.target();
     this.drag = null;
+    this.cfg.onDrag?.(null);
     if (this.outside(p)) this.cfg.onDropOutside?.(d.piece.it);
     else if (this.cfg.canPlace?.(d.piece.it, t.col, t.row, d.rotated)) this.cfg.onPlace?.(d.piece.it, t.col, t.row, d.rotated);
     this.rebuild();
@@ -363,6 +435,8 @@ export class GridView<T extends Placement> extends Phaser.GameObjects.Container 
       piece.border.setSize(piece.w * cell - 2, piece.h * cell - 2);
       piece.shade.setSize(piece.w * cell - 6, 0);
       piece.badges.setVisible(false);
+      // Картинка поворачивается вместе с рамкой (масштаб тот же: клетки предмета те же, только повёрнуты).
+      piece.img?.setPosition((piece.w * cell) / 2, (piece.h * cell) / 2).setAngle(d.rotated ? 90 : 0);
       piece.cont.each((o: Phaser.GameObjects.GameObject) => {
         if (!(o instanceof Phaser.GameObjects.Text)) return;
         if (o.originX === 0.5) o.setPosition((piece.w * cell) / 2, (piece.h * cell) / 2).setWordWrapWidth(piece.w * cell - 12);

@@ -11,6 +11,17 @@ export interface Pt {
 /** Где герой: в узле (точке или развилке) или на дороге road на расстоянии d от её начала (узла a). */
 export type MapPos = { node: string } | { road: number; d: number };
 
+/** Точка внутри многоугольника (пиксели подложки). */
+export function insidePoly(p: Pt, poly: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    if (yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
 /** Отрезок маршрута: проход по дороге road от расстояния d0 до d1 (d1 < d0 — против направления дороги). */
 export interface Leg {
   road: number;

@@ -1,8 +1,8 @@
 // Общие элементы интерфейса прототипа: цвета, текст, кнопка, описания предметов словами.
-// Ни картинок, ни шрифтов: всё рисуется фигурами и системным шрифтом.
+// Шрифт интерфейса системный (FONT); досье сумки — антиквой Old Standard (SERIF) тёмными чернилами (INK).
 import * as Phaser from 'phaser';
 import { ENEMY_ITEM_STATS, ENEMY_STAT_MULT, HERO_HP, ITEM_STATS, PARRY_DAMAGE_MULT, type ItemStats } from './config/balance';
-import { enemyKey, MUSIC } from './config/assets';
+import { enemyKey, FONTS, MUSIC } from './config/assets';
 import { FEEL } from './config/feel';
 import { ENEMIES, type EnemyId } from './data/enemies';
 import { ENEMY_CATEGORY_NAMES, ENEMY_ITEMS, type EnemyItemId } from './data/enemyItems';
@@ -62,9 +62,62 @@ export function segmentDist(x1: number, y1: number, x2: number, y2: number, x: n
   return Math.hypot(x - (x1 + k * dx), y - (y1 + k * dy));
 }
 
+let walkCursorCss: string | null = null;
+
+/**
+ * CSS-курсор «сюда можно идти» — след ноги (подошва, пятка, пять пальцев), нарисованный на холсте один раз.
+ * Горячая точка — середина следа. Для setDefaultCursor; если холст недоступен — обычная «рука».
+ */
+export function walkCursor(): string {
+  if (walkCursorCss) return walkCursorCss;
+  const F = FEEL.walkCursor;
+  const n = F.size;
+  const c = document.createElement('canvas');
+  c.width = n;
+  c.height = n;
+  const g = c.getContext('2d');
+  if (!g) return (walkCursorCss = 'pointer');
+  g.translate(n / 2, n / 2);
+  g.rotate((F.tilt * Math.PI) / 180);
+  const u = n / 32;
+  const blob = (x: number, y: number, rx: number, ry: number) => {
+    g.beginPath();
+    g.ellipse(x * u, y * u, rx * u, ry * u, 0, 0, Math.PI * 2);
+    g.fill();
+    g.stroke();
+  };
+  g.fillStyle = F.fill;
+  g.strokeStyle = F.stroke;
+  g.lineWidth = 1.6 * u;
+  blob(0, 1, 5.6, 8); // подошва
+  blob(0, 11, 4.2, 3.6); // пятка
+  blob(-4.6, -9.4, 1.8, 2.1); // пальцы — от большого к мизинцу
+  blob(-1.2, -11.2, 1.6, 1.9);
+  blob(2, -10.6, 1.45, 1.7);
+  blob(4.6, -8.8, 1.3, 1.5);
+  blob(6.4, -6.4, 1.15, 1.3);
+  return (walkCursorCss = `url(${c.toDataURL('image/png')}) ${n / 2} ${n / 2}, pointer`);
+}
+
 export const W = 1920;
 export const H = 1080;
 export const FONT = 'Arial, Helvetica, sans-serif';
+/** Антиква досье (FONTS в assets.ts): обычная, курсив, жирная; запасной — Georgia. */
+export const SERIF = `${FONTS.serif.key}, Georgia, serif`;
+export const SERIF_ITALIC = `${FONTS.serifItalic.key}, Georgia, serif`;
+export const SERIF_BOLD = `${FONTS.serifBold.key}, Georgia, serif`;
+
+/** Чернила и сургуч на бумаге (досье, жетоны): основной текст, бледный, хорошее, плохое, золото основного оружия. */
+export const INK = {
+  text: '#2b1a0e',
+  soft: '#6b4a2e',
+  good: '#2f5a1f',
+  bad: '#8a1c1c',
+  gold: '#8a6414',
+  line: 0x4a2e18,
+  goodN: 0x2f5a1f,
+  badN: 0x8a1c1c,
+};
 
 export const C = {
   bg: 0x14121a,
@@ -236,6 +289,44 @@ export function describeEnemyItem(id: EnemyItemId): string {
   const parts: string[] = [ENEMY_CATEGORY_NAMES[d.category], `урон ${hitRange(s.damage * ENEMY_STAT_MULT)}`, `${s.cooldown} с на замах`];
   if (s.charges) parts.push(`зарядов: ${s.charges}`);
   return `${d.name}: ${parts.join(' · ')}`;
+}
+
+/**
+ * Картинка с чёрным фоном вокруг (пергамент, лист досье): почти чёрные пиксели — в прозрачность, края плавно
+ * (ярче cut[0] — прозрачно, до cut[1] — плавно). Текстура outKey создаётся один раз на игру; возвращает её ключ.
+ */
+export function cutBlackBackground(scene: Phaser.Scene, srcKey: string, outKey: string, cut: [number, number]): string {
+  if (scene.textures.exists(outKey)) return outKey;
+  const src = scene.textures.get(srcKey).getSourceImage() as HTMLImageElement;
+  const t = scene.textures.createCanvas(outKey, src.width, src.height)!;
+  const c = t.getContext();
+  c.drawImage(src, 0, 0);
+  const data = c.getImageData(0, 0, src.width, src.height);
+  const d = data.data;
+  const [lo, hi] = cut;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.max(d[i], d[i + 1], d[i + 2]);
+    if (v < hi) d[i + 3] = Math.round((255 * Math.max(0, v - lo)) / (hi - lo));
+  }
+  c.putImageData(data, 0, 0);
+  t.refresh();
+  return outKey;
+}
+
+/** Нить соседства между двумя предметами в сетке: от кого, кому, подпись («+25% к урону»), хорошая ли, действует ли. */
+export interface NeighborLink {
+  from: number;
+  to: number;
+  label: string;
+  good: boolean;
+  inactive: boolean;
+}
+
+/** Нити соседства для предмета uid: что ему дают соседи и что он даёт соседям (по расчёту power). */
+export function neighborLinks(uid: number, power = computePower([])): NeighborLink[] {
+  return power.effects
+    .filter((e) => (e.target === uid || e.source === uid) && e.source !== e.target)
+    .map((e) => ({ from: e.source, to: e.target, label: e.label, good: e.good, inactive: !!e.inactive }));
 }
 
 /**

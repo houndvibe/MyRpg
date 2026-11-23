@@ -11,6 +11,7 @@
 // Метки, подписи, пунктир и кольца — одного размера на экране при любом зуме (делятся на зум каждый кадр).
 import * as Phaser from 'phaser';
 import { CandleBar } from '../components/CandleBar';
+import { PauseMenu } from '../components/PauseMenu';
 import { CloudCurtain } from '../components/CloudCurtain';
 import { BagWindow } from '../components/BagWindow';
 import { DialogWindow } from '../components/DialogWindow';
@@ -20,6 +21,9 @@ import { addMapAmbience, addSnow, FX_SOFT } from '../components/MapAmbience';
 import { MapCarriage } from '../components/MapCarriage';
 import { MapFog } from '../components/MapFog';
 import { MapHero } from '../components/MapHero';
+import { MapOccluders } from '../components/MapOccluders';
+import { Minimap } from '../components/Minimap';
+import type { FogShape } from '../components/MapFog';
 import { MAP_LAYOUT as L, PLACE_SIDEBAR, type MapView } from '../config/assets';
 import { CANDLES_PER_NIGHT, CARRIAGE_CANDLES, COACHMAN_TRIBUTE, ROOM_STATS } from '../config/balance';
 import { FEEL } from '../config/feel';
@@ -31,8 +35,8 @@ import { ITEMS } from '../data/items';
 import { CANDLES_UNLOCK_AT, CARRIAGE, ROOM_IDS, ROOMS, TRIBUTE_FORGIVEN, type SleepPlace } from '../data/night';
 import { WORLD_NODES } from '../data/world';
 import { actionCost, addItem, canAddItem, canTakeRoom, qtePool, run, sleep, spendCandles, unlockCandles } from '../state';
-import { locationGraph, routeLength, worldGraph, type Leg, type MapGraph, type MapPos, type Pt } from '../systems/map';
-import { addText, C, H, playGameMusic, W, type MusicTrack } from '../ui';
+import { insidePoly, locationGraph, routeLength, worldGraph, type Leg, type MapGraph, type MapPos, type Pt } from '../systems/map';
+import { addText, C, H, playGameMusic, W, walkCursor, type MusicTrack } from '../ui';
 
 /** Узел-метка на карте: точка интереса локации или локация на карте мира (координаты — пиксели подложки). */
 interface MapNode {
@@ -78,6 +82,18 @@ export class MapScene extends Phaser.Scene {
   private hero!: Phaser.GameObjects.Container;
   /** Фигурка героя на карте локации, карета — на карте мира. */
   private figure!: MapHero | MapCarriage;
+  /** Здания и деревья-заслоны карты (MapView.occluders): глубина по основанию, силуэт героя, качание деревьев. */
+  private occl!: MapOccluders;
+  /** Мини-карта на Tab (только у карт с MapView.minimap) и здания, открытые по контуру, — для её тумана. */
+  private minimap: Minimap | null = null;
+  private fogShapes: { x: number; y: number; shape: FogShape }[] = [];
+  /** Свободный ход в лесу: куда идёт по клику (пиксели подложки), что потом (выйдя на тропу — идти туда по дорогам). */
+  private freeGoal: Pt | null = null;
+  private freeThen: MapPos | null = null;
+  /** Идёт по дорогам к краю леса, чтобы дальше по прямой в лес к этой точке. */
+  private pendingFree: Pt | null = null;
+  /** Сколько мс идёт по клику в лесу, почти не двигаясь (упёрся). */
+  private freeStuck = 0;
   private dust!: Phaser.GameObjects.Particles.ParticleEmitter;
   private routeLine!: Phaser.GameObjects.Graphics;
   private ring!: Phaser.GameObjects.Arc;
@@ -97,6 +113,10 @@ export class MapScene extends Phaser.Scene {
   private buildingUi = false;
   /** Открытое окно взаимодействия — пока оно есть, карта не получает ввод. */
   private dialog: DialogWindow | null = null;
+  /** Открытое меню паузы (Esc) — карта стоит и не получает ввод. */
+  private pause: PauseMenu | null = null;
+  /** Кадр, в котором окно разговора закрылось по Esc, — тот же Esc не открывает паузу и не закрывает вернувшееся меню точки. */
+  private dialogClosedFrame = -1;
   /** Идёт QTE небоевой проверки — карта не получает ввод. */
   private qte: QteWindow | null = null;
   /** Открытая сумка (клавиша I) — пока она есть, карта не получает ввод и герой стоит. */
@@ -190,6 +210,161 @@ export class MapScene extends Phaser.Scene {
     return poisOf(run.location).map((id) => ({ id, name: POIS[id].name, x: POIS[id].x, y: POIS[id].y }));
   }
 
+  // ─── Свободный ход в лесу (LOCATIONS[…].free) ─────────────────────────────
+
+  /** Зоны свободного хода текущей карты. */
+  private get zones(): [number, number][][] {
+    return this.isWorld ? [] : (LOCATIONS[run.location].free ?? []);
+  }
+
+  private inZone(p: Pt): boolean {
+    return this.zones.some((z) => insidePoly(p, z));
+  }
+
+  /** Расстояние от точки до ближайшей зоны (0 — внутри), пиксели подложки. */
+  private zoneDist(p: Pt): number {
+    let best = Infinity;
+    for (const z of this.zones) {
+      if (insidePoly(p, z)) return 0;
+      for (let i = 0, j = z.length - 1; i < z.length; j = i++) {
+        const [ax, ay] = z[j];
+        const [bx, by] = z[i];
+        const len2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
+        const t = Math.min(1, Math.max(0, ((p.x - ax) * (bx - ax) + (p.y - ay) * (by - ay)) / len2));
+        best = Math.min(best, Math.hypot(ax + (bx - ax) * t - p.x, ay + (by - ay) * t - p.y));
+      }
+    }
+    return best;
+  }
+
+  /** Где стоит герой — точка подложки (в лесу, в узле или на дороге). */
+  private heroPoint(): Pt {
+    return run.mapFree ? { ...run.mapFree } : this.graph.pointAt(this.herePos);
+  }
+
+  /** Можно стоять: в лесу или у его края возле тропы (полоса exitDist — переход между лесом и тропой). */
+  private freeOk(p: Pt): boolean {
+    const F = FEEL.map.forest;
+    return this.inZone(p) || (this.zoneDist(p) <= F.exitDist && this.graph.nearestOnRoad(p).dist <= F.exitDist);
+  }
+
+  /** Стволы: точка выталкивается из круга ствола (герой скользит вдоль), задетое дерево качается. */
+  private pushOffTrunks(n: Pt): Pt {
+    const F = FEEL.map.forest;
+    let q = n;
+    for (const t of this.occl.trunks) {
+      const dx = q.x - t.x;
+      const dy = q.y - t.y;
+      const d = Math.hypot(dx, dy);
+      const R = t.r + F.heroR;
+      if (d < R + F.touch) this.occl.shake(t.i, q.x);
+      if (d < R) q = d > 1e-3 ? { x: t.x + (dx / d) * R, y: t.y + (dy / d) * R } : { x: t.x + R, y: t.y };
+    }
+    return q;
+  }
+
+  /**
+   * Шаг в лесу в сторону v (единичный вектор) на len px подложки: стволы обходятся, у края — скольжение вдоль или стоп.
+   * allowExit — у тропы шаг к ней выводит на тропу (клавиши). Возвращает пройденное и вышел ли на тропу.
+   */
+  private freeMove(v: Pt, len: number, allowExit: boolean): { moved: number; exited: boolean } {
+    const p = run.mapFree!;
+    let n = this.pushOffTrunks({ x: p.x + v.x * len, y: p.y + v.y * len });
+    if (!this.freeOk(n)) {
+      const a = this.pushOffTrunks({ x: p.x + v.x * len, y: p.y });
+      const b = this.pushOffTrunks({ x: p.x, y: p.y + v.y * len });
+      n = Math.abs(v.x) > 0.2 && this.freeOk(a) ? a : Math.abs(v.y) > 0.2 && this.freeOk(b) ? b : p;
+    }
+    const moved = Math.hypot(n.x - p.x, n.y - p.y);
+    // У самой тропы и подходя к ней (тропа идёт по краю леса, местами — внутри зоны) — шаг на тропу.
+    if (allowExit) {
+      const near = this.graph.nearestOnRoad(n);
+      if (near.dist <= FEEL.map.forest.snap && near.dist < this.graph.nearestOnRoad(p).dist) {
+        this.leaveForest(near);
+        return { moved, exited: true };
+      }
+    }
+    run.mapFree = { x: n.x, y: n.y };
+    this.hero.setPosition(n.x * this.k, n.y * this.k);
+    if (this.fog?.reveal(n.x, n.y)) this.refreshMarkers();
+    return { moved, exited: false };
+  }
+
+  /** Из леса на тропу — в место near (дорога и расстояние от её начала). */
+  private leaveForest(near: { road: number; d: number }): void {
+    run.mapFree = null;
+    this.storePos({ road: near.road, d: near.d });
+    const pt = this.graph.pointOnRoad(near.road, near.d);
+    this.hero.setPosition(pt.x * this.k, pt.y * this.k);
+  }
+
+  /** Пойти по прямой по лесу к точке goal (пиксели подложки); then — потом, выйдя на тропу, идти туда по дорогам. */
+  private startFreeWalk(goal: Pt, then: MapPos | null): void {
+    this.closeSidebar();
+    this.freeGoal = goal;
+    this.freeThen = then;
+    this.freeStuck = 0;
+    this.velocity = { x: 0, y: 0 };
+    this.zoomAnchor = null;
+    this.following = true;
+    this.cameras.main.startFollow(this.hero, false, FEEL.map.followLerp, FEEL.map.followLerp);
+    const ring = then ? this.graph.pointAt(then) : goal;
+    this.ring.setPosition(ring.x * this.k, ring.y * this.k).setVisible(true);
+    this.figure.setWalking(true);
+    this.dust.emitting = true;
+    this.refreshMarkers();
+    this.refreshLocation();
+  }
+
+  /** Кадр хода по клику в лесу. Возвращает сдвиг по x. */
+  private freeWalk(delta: number): number {
+    const g = this.freeGoal!;
+    const p = run.mapFree!;
+    const x0 = this.hero.x;
+    const step = (this.walkSpeed / this.k) * (delta / 1000);
+    const dist = Math.hypot(g.x - p.x, g.y - p.y);
+    if (dist <= step) {
+      this.freeMove({ x: (g.x - p.x) / (dist || 1), y: (g.y - p.y) / (dist || 1) }, dist, false);
+      this.arriveFree();
+    } else {
+      const r = this.freeMove({ x: (g.x - p.x) / dist, y: (g.y - p.y) / dist }, step, false);
+      // Упёрся (ствол, край зоны) — постоял немного и встал.
+      this.freeStuck = r.moved < step * 0.3 ? this.freeStuck + delta : 0;
+      if (this.freeStuck > FEEL.map.forest.stuckMs) this.arriveFree();
+    }
+    return this.hero.x - x0;
+  }
+
+  /** Дошёл по лесу (или упёрся): стоит; если дальше путь по дорогам — выходит на ближайшую тропу и идёт. */
+  private arriveFree(): void {
+    const then = this.freeThen;
+    this.freeGoal = null;
+    this.freeThen = null;
+    this.ring.setVisible(false);
+    this.figure.setWalking(false);
+    this.dust.emitting = false;
+    if (then && run.mapFree) {
+      this.leaveForest(this.graph.nearestOnRoad(run.mapFree));
+      this.go(then);
+      return;
+    }
+    this.refreshMarkers();
+    this.refreshLocation();
+  }
+
+  /** Клик по лесу: в лесу — по прямой туда; на тропе — по дорогам к ближайшему к точке месту тропы, оттуда — в лес. */
+  private goFree(pt: Pt): void {
+    if (this.target) {
+      this.storePos(this.graph.alongRoute(this.legs, this.walked).pos);
+      this.target = null;
+      this.targetRoad = null;
+      this.legs = [];
+    }
+    if (run.mapFree) return this.startFreeWalk(pt, null);
+    const near = this.graph.nearestOnRoad(pt);
+    this.go({ road: near.road, d: near.d }, pt);
+  }
+
   private nodeName(id: string): string {
     return this.isWorld ? LOCATIONS[id as LocationId].name : POIS[id as PoiId].name;
   }
@@ -214,6 +389,7 @@ export class MapScene extends Phaser.Scene {
     this.zoomAnchor = null;
     this.ringPulse = { s: 1 };
     this.dialog = null;
+    this.pause = null;
     this.qte = null;
     this.bag = null;
     this.transitioning = false;
@@ -242,10 +418,25 @@ export class MapScene extends Phaser.Scene {
     this.fog = null;
     if (!this.isWorld && this.view.fogOfWar) {
       const pts = (run.revealed[run.location] ??= []);
-      const p = this.graph.pointAt(this.herePos);
+      const p = this.heroPoint();
       if (!pts.some(([x, y]) => Math.hypot(x - p.x, y - p.y) < FEEL.map.fogOfWar.step)) pts.push([p.x, p.y]);
       this.fog = new MapFog(this, worldW, worldH, k, pts, this.view.fogRadius);
     }
+
+    // Заслоны: здания и деревья, вырезанные из подложки, поверх карты — за ними герой прячется.
+    this.occl = new MapOccluders(this, k, this.view.key, bg.height, this.view.occluders ?? []);
+    // Места особой камеры, где туман уже растаял по контуру здания, — открыть их сразу.
+    this.fogShapes = [];
+    for (const f of this.view.focus ?? []) {
+      const shape = f.shape !== undefined ? this.occl.shapeOf(f.shape) : null;
+      if (shape) {
+        this.fog?.stampShape(this, f.x, f.y, shape);
+        this.fogShapes.push({ x: f.x, y: f.y, shape });
+      }
+    }
+    this.freeGoal = null;
+    this.freeThen = null;
+    this.pendingFree = null;
 
     this.routeLine = this.add.graphics().setDepth(5);
     this.ring = this.add.circle(0, 0, F.ringRadius).setStrokeStyle(4, F.routeColor, 1).setDepth(6).setVisible(false);
@@ -265,9 +456,11 @@ export class MapScene extends Phaser.Scene {
     this.hereRing = this.add.circle(0, 0, F.markerRadius + 8).setStrokeStyle(2, F.markerStroke, 0.9).setDepth(7);
 
     // Герой: фигурка на подставке (components/MapHero.ts); на карте мира — карета (MapCarriage). Пыль из-под ног на ходу.
-    const start = this.graph.pointAt(this.herePos);
+    const start = this.heroPoint();
     this.figure = this.isWorld ? new MapCarriage(this, FEEL.world.carriage.width) : new MapHero(this, F.hero.height);
     this.hero = this.add.container(start.x * k, start.y * k, [this.figure.sprite]).setDepth(8);
+    // Свет на героя (луна и т. п.): тень от источника, кайма, тон по повороту.
+    if (this.view.light && this.figure instanceof MapHero) this.figure.addLight(this, this.hero, this.view.light);
     const D = F.dust;
     this.dust = this.add.particles(0, 0, FX_SOFT, {
       frequency: D.frequency,
@@ -289,10 +482,12 @@ export class MapScene extends Phaser.Scene {
     // Интерфейс поверх карты — только для ui-камеры. Снег — тоже на экране, под интерфейсом.
     this.buildingUi = true;
     if (this.view.ambience.snow) addSnow(this, W, H, 15);
-    // Где герой — в левом нижнем углу, под текстом мягкое затемнение (растягивается по тексту в refreshLocation).
+    // Где герой — в правом нижнем углу, под текстом мягкое затемнение (растягивается по тексту в refreshLocation).
     this.locationShade = this.add.image(0, 0, FX_SOFT).setTint(0x000000).setAlpha(FEEL.map.locationShade.alpha).setDepth(20);
-    this.location = addText(this, L.locationText.x, L.locationText.y, '', 28, C.accent).setOrigin(0, 1).setDepth(21);
+    this.location = addText(this, L.locationText.x, L.locationText.y, '', 28, C.accent).setOrigin(1, 1).setDepth(21);
     this.addPortrait();
+    // Мини-карта (Tab) — у карт локаций, где она включена.
+    this.minimap = !this.isWorld && this.view.minimap ? new Minimap(this, this.view.key, bg.width, bg.height, this.view.fogRadius ?? F.fogOfWar.radius, poisOf(run.location).map((id) => ({ id, name: POIS[id].name, x: POIS[id].x, y: POIS[id].y }))) : null;
     this.sidebar = new PlaceSidebar(this);
     this.curtain = new CloudCurtain(this, !!this.arrive);
     this.buildingUi = false;
@@ -312,12 +507,12 @@ export class MapScene extends Phaser.Scene {
       cam.pan(worldW / 2, worldH / 2, Tr.openMs * 1.3, 'Cubic.easeOut');
       this.curtain.open(Tr.openMs);
     } else if (this.arrive === 'descend') {
-      this.zoomTarget = Phaser.Math.Clamp(savedZoom.get(this.view.key) ?? 1, this.minZoom, this.maxZoom);
+      this.zoomTarget = Phaser.Math.Clamp(savedZoom.get(this.view.key) ?? this.startZoom(), this.minZoom, this.maxZoom);
       cam.setZoom(this.minZoom).zoomTo(this.zoomTarget, Tr.openMs * 1.3, 'Cubic.easeOut');
       this.curtain.open(Tr.openMs);
     } else {
       const I = F.intro;
-      this.zoomTarget = Phaser.Math.Clamp(savedZoom.get(this.view.key) ?? (this.isWorld ? this.minZoom : 1), this.minZoom, this.maxZoom);
+      this.zoomTarget = Phaser.Math.Clamp(savedZoom.get(this.view.key) ?? this.startZoom(), this.minZoom, this.maxZoom);
       cam.setZoom(Math.min(this.zoomTarget * I.fromZoom, this.maxZoom * I.fromZoom)).zoomTo(this.zoomTarget, I.zoomMs, 'Cubic.easeOut');
       cam.fadeIn(I.fadeMs);
       this.uiCam.fadeIn(I.fadeMs);
@@ -338,7 +533,19 @@ export class MapScene extends Phaser.Scene {
     // M — карта мира: из локации подъём за облака, на карте мира — спуск обратно в локацию героя (если он не в пути).
     // I — сумка; Esc тоже закрывает её.
     this.input.keyboard!.on('keydown-I', () => (this.qte ? undefined : this.bag ? this.closeBag() : this.openBag()));
-    this.input.keyboard!.on('keydown-ESC', () => (this.qte ? undefined : this.bag ? this.closeBag() : this.closeSidebar()));
+    // Esc: закрыть открытое (сумку, меню точки), а если ничего не открыто — меню паузы (и обратно).
+    this.input.keyboard!.on('keydown-ESC', () => {
+      if (this.qte || this.dialog || this.transitioning || this.dialogClosedFrame === this.game.loop.frame) return;
+      if (this.minimap?.open && !this.pause && !this.bag) this.minimap.close();
+      else if (this.pause) this.closePause();
+      else if (this.bag) this.closeBag();
+      else if (this.sidebar.openFor) this.closeSidebar();
+      else this.openPause();
+    });
+    // Tab — мини-карта локации (игра не останавливается).
+    this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TAB).on('down', () => {
+      if (!this.transitioning) this.minimap?.toggle();
+    });
     this.input.keyboard!.on('keydown-M', () => {
       if (this.busy) return;
       if (!this.isWorld && this.lodging) this.showHint(`В путь — только с ночлега: «${POIS[this.lodging].name}» → «Отдохнуть и в дорогу…»`);
@@ -357,11 +564,48 @@ export class MapScene extends Phaser.Scene {
     this.applyScreenSizes();
     if (this.resume) this.openDialog(this.resume.node);
     // Пришли (с карты мира, из Чащи) прямо в точку открытия свечей.
-    const at = this.graph.pointAt(this.herePos);
+    const at = this.heroPoint();
     this.checkCandleUnlock(at.x, at.y);
   }
 
-  /** Портрет героя в правом нижнем углу, без рамки: низ картинки — у края экрана; слева от него три полосы в том же масштабе. */
+  /** Мини-карта: видна, если включена и ничто другое не открыто; туман, точки, герой, маршрут и цель. */
+  private updateMinimap(delta: number): void {
+    const mm = this.minimap;
+    if (!mm) return;
+    const shown = !this.dialog && !this.bag && !this.pause && !this.qte && !this.transitioning;
+    const hero = { x: this.hero.x / this.k, y: this.hero.y / this.k };
+    let route: Pt[] = [];
+    let goal: Pt | null = null;
+    if (this.freeGoal) {
+      route = [hero, this.freeGoal];
+      goal = this.freeThen ? this.graph.pointAt(this.freeThen) : this.freeGoal;
+    } else if (this.target) {
+      route = this.graph.remainingPoints(this.legs, this.walked);
+      if (this.pendingFree) route.push(this.pendingFree);
+      goal = this.pendingFree ?? (this.targetRoad ? this.graph.pointOnRoad(this.targetRoad.road, this.targetRoad.d) : this.graph.nodePoint(this.target));
+    }
+    mm.update(delta, shown, hero, this.fog ? this.fog.openPoints : null, this.fogShapes, (x, y) => !this.fog || this.fog.isOpen(x, y), route, goal);
+  }
+
+  /** Первый вход на карту: мир — целиком, локация — ровно посередине между наибольшим отдалением и наибольшим приближением. */
+  private startZoom(): number {
+    return this.isWorld ? this.minZoom : (this.minZoom + this.maxZoom) / 2;
+  }
+
+  private openPause(): void {
+    this.setHover(null);
+    this.velocity = { x: 0, y: 0 };
+    this.buildingUi = true;
+    this.pause = new PauseMenu(this);
+    this.buildingUi = false;
+  }
+
+  private closePause(): void {
+    this.pause?.close();
+    this.pause = null;
+  }
+
+  /** Портрет героя в левом нижнем углу, без рамки: низ картинки — у края экрана; слева от него три полосы в том же масштабе. */
   private addPortrait(): void {
     const P = L.portrait;
     const img = this.add.image(P.x, P.bottom, P.key).setOrigin(0.5, 1).setDepth(21);
@@ -460,6 +704,7 @@ export class MapScene extends Phaser.Scene {
       id,
       () => {
         this.dialog = null;
+        this.dialogClosedFrame = this.game.loop.frame;
         this.showCorner(true);
         this.openSidebar();
       },
@@ -488,7 +733,7 @@ export class MapScene extends Phaser.Scene {
 
   /** Меню точки, где стоит герой: только на карте локации, когда он стоит в точке и ничто другое не открыто. */
   private openSidebar(): void {
-    if (this.isWorld || this.target || this.onRoad || this.keyWalking || this.dialog || this.qte || this.transitioning) return;
+    if (this.isWorld || this.target || this.onRoad || run.mapFree || this.keyWalking || this.dialog || this.qte || this.transitioning) return;
     const id = run.mapPoi;
     const actions: PlaceAction[] = [];
     const talk = POI_DIALOGS[id];
@@ -532,6 +777,9 @@ export class MapScene extends Phaser.Scene {
     // Надпись слева внизу — под панелью; название и так в меню.
     this.location.setVisible(false);
     this.locationShade.setVisible(false);
+    // Особая камера у точки (MapView.focus): камера плывёт к месту, туман над ним рассеивается.
+    const focus = this.view.focus?.find((f) => f.poi === id);
+    if (focus) return this.focusOn(focus);
     // Камера ведёт героя со сдвигом, чтобы он не прятался под панелью (сдвиг — в update).
     this.following = true;
     this.zoomAnchor = null;
@@ -544,6 +792,27 @@ export class MapScene extends Phaser.Scene {
       this.zoomTarget = z;
       cam.zoomTo(z, FEEL.sidebar.camZoomMs, 'Sine.easeInOut', true);
     }
+  }
+
+  /**
+   * Особая камера: перестаёт следить за героем и медленно, с плавным разгоном и торможением, едет к месту и приближается;
+   * место встаёт в центр свободной от меню части экрана. Туман над местом рассеивается. Ушёл из точки — камера снова за героем.
+   */
+  private focusOn(f: NonNullable<MapView['focus']>[number]): void {
+    const F = FEEL.map.focus;
+    const cam = this.cameras.main;
+    cam.stopFollow();
+    this.following = false;
+    this.zoomAnchor = null;
+    this.velocity = { x: 0, y: 0 };
+    const z = Phaser.Math.Clamp(f.zoom, this.minZoom, this.maxZoom);
+    if (this.zoomBeforeSidebar === null) this.zoomBeforeSidebar = this.zoomTarget;
+    this.zoomTarget = z;
+    // Меню справа: центр камеры правее места на полширины меню (в px мира при конечном зуме).
+    cam.pan(f.x * this.k + PLACE_SIDEBAR.w / 2 / z, f.y * this.k, F.panMs, F.ease, true);
+    cam.zoomTo(z, F.panMs, F.ease, true);
+    const shape = f.shape !== undefined ? this.occl.shapeOf(f.shape) : null;
+    if (this.fog?.dissolve(this, f.x, f.y, f.reveal, F.dissolveMs, F.dissolveDelayMs, shape)) this.time.delayedCall(F.dissolveDelayMs + F.dissolveMs, () => this.refreshMarkers());
   }
 
   /** Проверка в точке: награды некуда положить — подсказка; иначе свечи списываются и идёт QTE; итог — подсказкой, меню возвращается. */
@@ -564,7 +833,7 @@ export class MapScene extends Phaser.Scene {
         this.showHint(`${c.success} Найдено: ${ITEMS[c.reward.item].name}.`);
       } else this.showHint(c.fail);
       this.openSidebar();
-    }, !run.tutorialsSeen.includes('qte'));
+    }, run.showTutorials && !run.tutorialsSeen.includes('qte'));
     this.buildingUi = false;
   }
 
@@ -664,7 +933,7 @@ export class MapScene extends Phaser.Scene {
 
   /** Ввод закрыт: окно разговора или переход за облака. */
   private get busy(): boolean {
-    return !!this.dialog || !!this.bag || !!this.qte || this.transitioning;
+    return !!this.dialog || !!this.bag || !!this.qte || !!this.pause || this.transitioning;
   }
 
   // ─── Ходьба по клавишам WASD (только карта локации) ──────────────────────
@@ -694,6 +963,13 @@ export class MapScene extends Phaser.Scene {
   /** Кадр ходьбы по клавишам: идущий по клику путь бросается, герой шагает по дорогам в сторону v. Возвращает сдвиг по x. */
   private keyWalk(v: Pt, delta: number): number {
     const Kf = FEEL.map.keys;
+    // Шёл по клику по лесу — встаёт и дальше идёт клавишами.
+    this.pendingFree = null;
+    if (this.freeGoal) {
+      this.freeGoal = null;
+      this.freeThen = null;
+      this.ring.setVisible(false);
+    }
     if (this.target) {
       // Шёл по клику — остаётся там, где был, и дальше идёт клавишами.
       this.storePos(this.graph.alongRoute(this.legs, this.walked).pos);
@@ -712,7 +988,34 @@ export class MapScene extends Phaser.Scene {
       this.cameras.main.startFollow(this.hero, false, FEEL.map.followLerp, FEEL.map.followLerp);
       this.refreshLocation();
     }
-    const res = this.graph.steer(this.herePos, this.keySign, v, (this.walkSpeed / this.k) * (delta / 1000), Kf.look, Kf.minDot, Kf.keepDot);
+    const len = (this.walkSpeed / this.k) * (delta / 1000);
+    // В лесу — свободно в сторону клавиш.
+    if (run.mapFree) {
+      const x0 = this.hero.x;
+      const r = this.freeMove(v, len, true);
+      const moving = r.moved > 1e-6 || r.exited;
+      this.figure.setWalking(moving);
+      this.dust.emitting = moving;
+      if (r.exited) this.refreshLocation();
+      return this.hero.x - x0;
+    }
+    const p0 = this.graph.pointAt(this.herePos);
+    const res = this.graph.steer(this.herePos, this.keySign, v, len, Kf.look, Kf.minDot, Kf.keepDot);
+    // С тропы в лес: впереди по клавишам — лес, а тропа туда не ведёт (стоит или уходит в сторону) — сворачиваем.
+    if (this.zones.length) {
+      const F = FEEL.map.forest;
+      const q = { x: p0.x + v.x * F.enterLook, y: p0.y + v.y * F.enterLook };
+      const p1 = this.graph.pointAt(res.pos);
+      const mv = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+      const along = mv > 1e-6 ? ((p1.x - p0.x) * v.x + (p1.y - p0.y) * v.y) / mv : 0;
+      if (this.inZone(q) && (mv < len * 0.5 || along < 0.6)) {
+        run.mapFree = { x: p0.x, y: p0.y };
+        run.mapRoad = null;
+        this.refreshMarkers();
+        this.refreshLocation();
+        return this.keyWalk(v, delta);
+      }
+    }
     this.keySign = res.sign;
     this.storePos(res.pos);
     const pt = this.graph.pointAt(res.pos);
@@ -731,6 +1034,11 @@ export class MapScene extends Phaser.Scene {
     this.keyWalking = false;
     this.figure.setWalking(false);
     this.dust.emitting = false;
+    if (run.mapFree) {
+      this.refreshMarkers();
+      this.refreshLocation();
+      return;
+    }
     let pos = this.herePos;
     if (!('node' in pos)) {
       // Совсем рядом с точкой — встаём в неё.
@@ -766,7 +1074,8 @@ export class MapScene extends Phaser.Scene {
 
   private closeBag(): void {
     if (!this.bag) return;
-    this.bag.destroy();
+    // Окно уезжает само (BagWindow.close) — игра продолжается сразу.
+    this.bag.close();
     this.bag = null;
     // Шёл по клику — идёт дальше.
     if (this.target) {
@@ -785,7 +1094,8 @@ export class MapScene extends Phaser.Scene {
     const v = this.keyDir();
     if (v) dx = this.keyWalk(v, delta);
     else if (this.keyWalking) this.keyStop();
-    if (this.target && !this.bag) {
+    if (this.freeGoal && run.mapFree && !this.bag && !this.pause) dx = this.freeWalk(delta);
+    if (this.target && !this.bag && !this.pause) {
       const total = routeLength(this.legs);
       // Скорость — в px мира в секунду; путь считается в пикселях подложки.
       const speed = this.isWorld ? FEEL.world.speed : this.walkSpeed;
@@ -797,13 +1107,19 @@ export class MapScene extends Phaser.Scene {
       this.checkCandleUnlock(pt.x, pt.y);
       if (this.walked >= total) this.arriveAt();
     }
+    if (this.figure instanceof MapHero) {
+      this.figure.setRunning(!!this.shift?.isDown);
+      this.figure.aimLight(this.hero.x / this.k, this.hero.y / this.k);
+    }
     this.figure.update(delta, dx);
+    this.occl.update(delta, this.hero, this.dust, FEEL.map.hero.height, this.figure.sprite);
     this.dialog?.update(delta);
     this.qte?.update(delta);
-    // Меню точки открыто — герой правее центра на полширины панели (сдвиг в px мира зависит от зума).
+    this.updateMinimap(delta);
+    // Меню точки открыто (справа) — герой левее центра на полширины панели (сдвиг в px мира зависит от зума).
     const cam = this.cameras.main;
-    // Phaser вычитает сдвиг из точки цели: «+» сдвигает героя вправо — в центр свободной от панели части экрана.
-    cam.setFollowOffset(this.sidebar?.openFor ? PLACE_SIDEBAR.w / 2 / cam.zoom : 0, 0);
+    // Phaser вычитает сдвиг из точки цели: «−» сдвигает героя влево — в центр свободной от панели части экрана.
+    cam.setFollowOffset(this.sidebar?.openFor ? -PLACE_SIDEBAR.w / 2 / cam.zoom : 0, 0);
     this.applyScreenSizes();
     this.drawRoute();
   }
@@ -912,7 +1228,13 @@ export class MapScene extends Phaser.Scene {
   }
 
   /** Пойти к узлу или месту на дороге: маршрут считается от того места, где герой сейчас (в узле или посреди дороги). */
-  private go(dest: MapPos): void {
+  private go(dest: MapPos, free: Pt | null = null): void {
+    this.pendingFree = free;
+    // В лесу — сперва по прямой к ближайшей тропе, оттуда — по дорогам.
+    if (run.mapFree) {
+      const near = this.graph.nearestOnRoad(run.mapFree);
+      return this.startFreeWalk(this.graph.pointOnRoad(near.road, near.d), dest);
+    }
     const from: MapPos = this.target ? this.graph.alongRoute(this.legs, this.walked).pos : this.herePos;
     // Уже здесь — открыть окно точки, если оно есть.
     if (!this.target && !this.onRoad && 'node' in dest && dest.node === this.here) return this.openSidebar();
@@ -926,7 +1248,7 @@ export class MapScene extends Phaser.Scene {
     this.zoomAnchor = null;
     this.following = true;
     this.cameras.main.startFollow(this.hero, false, FEEL.map.followLerp, FEEL.map.followLerp);
-    const p = this.graph.pointAt(dest);
+    const p = free ?? this.graph.pointAt(dest);
     this.ring.setPosition(p.x * this.k, p.y * this.k).setVisible(true);
     this.dust.emitting = true;
     this.figure.setWalking(true);
@@ -948,6 +1270,15 @@ export class MapScene extends Phaser.Scene {
     this.ring.setVisible(false);
     this.arrivalWave(p.x * this.k, p.y * this.k);
     if (this.fog?.reveal(p.x, p.y)) this.refreshMarkers();
+    if (road && this.pendingFree) {
+      // Дошли по тропе до края леса — дальше по прямой в лес.
+      const goal = this.pendingFree;
+      this.pendingFree = null;
+      run.mapRoad = null;
+      run.mapFree = { x: p.x, y: p.y };
+      this.startFreeWalk(goal, null);
+      return;
+    }
     if (road) {
       // Остановились посреди дороги: ни окна, ни точки — просто стоим.
       run.mapRoad = { ...road };
@@ -989,8 +1320,9 @@ export class MapScene extends Phaser.Scene {
     const R = FEEL.map.route;
     const color = FEEL.map.routeColor;
     const g = this.routeLine.clear();
-    if (!this.target) return;
-    const pts = this.graph.remainingPoints(this.legs, this.walked).map((p) => ({ x: p.x * this.k, y: p.y * this.k }));
+    if (!this.target && !this.freeGoal) return;
+    const pts = this.freeGoal ? [{ x: this.hero.x, y: this.hero.y }, { x: this.freeGoal.x * this.k, y: this.freeGoal.y * this.k }] : this.graph.remainingPoints(this.legs, this.walked).map((p) => ({ x: p.x * this.k, y: p.y * this.k }));
+    if (!this.freeGoal && this.pendingFree) pts.push({ x: this.pendingFree.x * this.k, y: this.pendingFree.y * this.k });
     if (pts.length < 2) return;
     const inv = 1 / this.cameras.main.zoom;
     const step = R.step * inv;
@@ -1047,7 +1379,9 @@ export class MapScene extends Phaser.Scene {
     const w = this.world(p);
     const ui = this.overUi(p);
     this.setHover(ui ? null : this.nodeAt(w.x, w.y));
-    this.input.setDefaultCursor(!ui && (this.hovered || this.roadAt(w.x, w.y)) ? 'pointer' : 'default');
+    // Подсветка здания под мышью (заслоны с hover, уже открытые из-под тумана).
+    const overBuilding = this.occl.hoverAt(ui || this.isWorld ? null : { x: w.x / this.k, y: w.y / this.k }, (x, y) => !this.fog || this.fog.isOpen(x, y)) && !!this.occl.hoveredPoi;
+    this.input.setDefaultCursor(!ui && (this.hovered || overBuilding || this.roadAt(w.x, w.y) || this.forestAt(w.x, w.y)) ? walkCursor() : 'default');
   }
 
   private onUp(p: Phaser.Input.Pointer): void {
@@ -1063,8 +1397,19 @@ export class MapScene extends Phaser.Scene {
     const w = this.world(p);
     const id = this.nodeAt(w.x, w.y);
     if (id) return this.travel(id);
+    // Клик по зданию (заслон с poi, открытый из-под тумана) — идти в его точку; здание закрывает дороги за ним.
+    if (!this.isWorld && this.occl.hoverAt({ x: w.x / this.k, y: w.y / this.k }, (x, y) => !this.fog || this.fog.isOpen(x, y)) && this.occl.hoveredPoi) return this.travel(this.occl.hoveredPoi);
     const road = this.roadAt(w.x, w.y);
-    if (road) this.go(road);
+    if (road) return this.go(road);
+    const free = this.forestAt(w.x, w.y);
+    if (free) this.goFree(free);
+  }
+
+  /** Место в лесу под курсором (точка мира → пиксели подложки): внутри зоны свободного хода и на открытой части карты. */
+  private forestAt(x: number, y: number): Pt | null {
+    const p = { x: x / this.k, y: y / this.k };
+    if (!this.inZone(p) || (this.fog && !this.fog.isOpen(p.x, p.y))) return null;
+    return p;
   }
 
   /** Место на дороге под курсором (точка мира): только на карте локации и только на открытой части карты. */
@@ -1114,7 +1459,7 @@ export class MapScene extends Phaser.Scene {
     const prev = this.markers.find((m) => m.id === this.hovered);
     if (prev) this.tweens.add({ targets: prev.hover, s: 1, duration: F.markerHoverMs });
     this.hovered = id;
-    this.input.setDefaultCursor(id ? 'pointer' : 'default');
+    this.input.setDefaultCursor(id ? walkCursor() : 'default');
     this.tweens.killTweensOf(this.tooltip);
     if (id) {
       const m = this.markers.find((x) => x.id === id)!;
@@ -1132,7 +1477,7 @@ export class MapScene extends Phaser.Scene {
 
   private refreshMarkers(): void {
     const F = FEEL.map;
-    const atNode = !this.target && !this.onRoad;
+    const atNode = !this.target && !this.onRoad && !run.mapFree && !this.freeGoal;
     for (const m of this.markers) {
       const fill = m.id === this.hovered ? F.markerHoverFill : atNode && m.id === this.here ? F.markerHereFill : F.markerFill;
       m.dot.setFillStyle(fill);
@@ -1148,16 +1493,16 @@ export class MapScene extends Phaser.Scene {
     this.hereRing.setPosition(here.x * this.k, here.y * this.k).setVisible(atNode);
   }
 
-  /** Надпись слева внизу: где герой. Локация — «Северляндия · Вы здесь: Зимняя гавань», мир — «Карта мира · …». */
+  /** Надпись справа внизу: где герой. Локация — «Северляндия · Вы здесь: Зимняя гавань», мир — «Карта мира · …». */
   private refreshLocation(): void {
     const def = LOCATIONS[run.location];
     const head = this.isWorld ? 'Карта мира' : def.parent ? `${LOCATIONS[def.parent].name} · ${def.name}` : def.name;
-    const tail = this.target === ROAD || this.keyWalking ? 'В пути' : this.target ? `В пути: → ${this.nodeName(this.target)}` : this.onRoad ? 'Вы здесь: на дороге' : this.isWorld ? `Вы в локации: ${this.nodeName(this.here)}` : `Вы здесь: ${this.nodeName(this.here)}`;
+    const tail = this.freeGoal || (run.mapFree && this.keyWalking) ? 'В пути' : run.mapFree ? 'Вы здесь: в лесу' : this.target === ROAD || this.keyWalking ? 'В пути' : this.target ? `В пути: → ${this.nodeName(this.target)}` : this.onRoad ? 'Вы здесь: на дороге' : this.isWorld ? `Вы в локации: ${this.nodeName(this.here)}` : `Вы здесь: ${this.nodeName(this.here)}`;
     this.location.setText(`${head} · ${tail}`);
     // Затемнение — мягкое пятно по центру текста, с запасом вокруг.
     const S = FEEL.map.locationShade;
     const t = this.location;
-    this.locationShade.setPosition(t.x + t.width / 2, t.y - t.height / 2).setDisplaySize(t.width + S.padX * 2, t.height + S.padY * 2);
+    this.locationShade.setPosition(t.x + t.width * (0.5 - t.originX), t.y + t.height * (0.5 - t.originY)).setDisplaySize(t.width + S.padX * 2, t.height + S.padY * 2);
   }
 }
 

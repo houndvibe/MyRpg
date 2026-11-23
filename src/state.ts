@@ -23,6 +23,8 @@ export interface RunState {
   mapPoi: PoiId;
   /** Герой остановился посреди дороги (клик по дороге): дорога и расстояние от её начала; null — стоит в точке mapPoi. */
   mapRoad: { road: number; d: number } | null;
+  /** Герой в зоне свободного хода (лес у лачуги): где стоит, пиксели подложки; null — на дорогах (mapPoi / mapRoad). */
+  mapFree: { x: number; y: number } | null;
   /** Туман войны: где герой уже был в каждой локации — точки (пиксели подложки), вокруг которых карта открыта. */
   revealed: Partial<Record<LocationId, [number, number][]>>;
   /** Ночь по счёту (с 1) и свечи, что остались на неё (docs/gameplay.md). */
@@ -42,6 +44,8 @@ export interface RunState {
   checksDone: string[];
   /** Пройденные обучения (data/tutorials.ts) — больше не показываются. */
   tutorialsSeen: TutorialId[];
+  /** Настройка «Показывать обучение» (меню паузы): выключена — обучения в игре не показываются (и не считаются пройденными). */
+  showTutorials: boolean;
 }
 
 export const run: RunState = {
@@ -52,6 +56,7 @@ export const run: RunState = {
   location: START_LOCATION,
   mapPoi: START_POI,
   mapRoad: null,
+  mapFree: null,
   revealed: {},
   night: 1,
   candles: CANDLES_PER_NIGHT,
@@ -62,6 +67,7 @@ export const run: RunState = {
   qteOrder: [...QTE_LETTERS],
   checksDone: [],
   tutorialsSeen: [],
+  showTutorials: true,
 };
 
 // Стартовый набор, как в Людъмаке: стартовое оружие сразу основное.

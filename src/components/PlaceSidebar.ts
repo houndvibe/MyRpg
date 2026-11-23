@@ -1,4 +1,4 @@
-// Боковое меню точки (сайдбар): выезжает слева на всю высоту экрана, когда герой пришёл в точку локации.
+// Боковое меню точки (сайдбар): выезжает справа на всю высоту экрана, когда герой пришёл в точку локации.
 // Сверху — картинка места (places/<id>.webp; нет арта — увеличенный фрагмент карты вокруг точки), ниже название,
 // художественное описание (data/places.ts) и кнопки действий. Закреплено на экране; сцена рисует его камерой интерфейса.
 // Раскладка — PLACE_SIDEBAR (assets.ts), время и цвета — FEEL.sidebar.
@@ -7,7 +7,7 @@ import { PLACE_SIDEBAR as S, placeKey } from '../config/assets';
 import { FEEL } from '../config/feel';
 import { POIS, type PoiId } from '../data/map';
 import { PLACE_TEXT } from '../data/places';
-import { addText, Button, C, H } from '../ui';
+import { addText, Button, C, H, W } from '../ui';
 
 /** Действие точки: подпись кнопки и что сделать. */
 export interface PlaceAction {
@@ -38,20 +38,20 @@ export class PlaceSidebar {
   constructor(private scene: Phaser.Scene, depth = 25) {
     ensureShadow(scene);
     const F = FEEL.sidebar;
-    this.root = scene.add.container(-S.w - F.shadowW, 0).setScrollFactor(0).setDepth(depth).setVisible(false);
-    // Подложка панели (рамка, проём под картинку, золотая кайма справа) и мягкая тень на карту.
+    this.root = scene.add.container(W + F.shadowW, 0).setScrollFactor(0).setDepth(depth).setVisible(false);
+    // Подложка панели, отражённая (рамка, проём под картинку, золотая кайма слева — к карте), и мягкая тень на карту слева.
     // Нет подложки — тёмная панель с каймой, нарисованная кодом.
-    const shadow = scene.add.image(S.w, 0, SHADOW).setOrigin(0).setDisplaySize(F.shadowW, H).setAlpha(F.shadowAlpha);
+    const shadow = scene.add.image(0, 0, SHADOW).setOrigin(1, 0).setFlipX(true).setDisplaySize(F.shadowW, H).setAlpha(F.shadowAlpha);
     this.picture = scene.add.container(0, 0);
     if (scene.textures.exists(S.panel.key)) {
       ensurePanelCut(scene);
-      this.root.add([shadow, scene.add.rectangle(S.image.x, S.image.y, S.image.w, S.image.h, 0x000000).setOrigin(0), this.picture, scene.add.image(0, 0, PANEL_CUT).setOrigin(0).setDisplaySize(S.w, H)]);
+      this.root.add([shadow, scene.add.rectangle(S.image.x, S.image.y, S.image.w, S.image.h, 0x000000).setOrigin(0), this.picture, scene.add.image(0, 0, PANEL_CUT).setOrigin(0).setFlipX(true).setDisplaySize(S.w, H)]);
     }
     else
       this.root.add([
         scene.add.rectangle(0, 0, S.w, H, F.fill, F.fillAlpha).setOrigin(0),
         shadow,
-        scene.add.rectangle(S.w - F.strokeWidth / 2, 0, F.strokeWidth, H, F.stroke).setOrigin(0.5, 0),
+        scene.add.rectangle(F.strokeWidth / 2, 0, F.strokeWidth, H, F.stroke).setOrigin(0.5, 0),
         this.picture,
       ]);
   }
@@ -63,7 +63,7 @@ export class PlaceSidebar {
 
   /** Точка экрана над панелью — карта её не получает. */
   covers(x: number): boolean {
-    return this.shown && x <= S.w;
+    return this.shown && x >= W - S.w;
   }
 
   /** Показать меню точки id: картинка (или фрагмент карты), название, описание, пометка note (если есть), кнопки действий. */
@@ -117,23 +117,23 @@ export class PlaceSidebar {
     b.add(x);
     this.root.add(b);
 
-    // Выезд слева.
+    // Выезд справа.
     if (!this.shown) {
       this.shown = true;
       this.root.setVisible(true);
       scene.tweens.killTweensOf(this.root);
-      scene.tweens.add({ targets: this.root, x: 0, duration: FEEL.sidebar.slideMs, ease: 'Cubic.easeOut' });
+      scene.tweens.add({ targets: this.root, x: W - S.w, duration: FEEL.sidebar.slideMs, ease: 'Cubic.easeOut' });
     }
   }
 
-  /** Уехать влево. */
+  /** Уехать вправо. */
   close(): void {
     if (!this.shown) return;
     this.shown = false;
     this.scene.tweens.killTweensOf(this.root);
     this.scene.tweens.add({
       targets: this.root,
-      x: -S.w - FEEL.sidebar.shadowW,
+      x: W + FEEL.sidebar.shadowW,
       duration: FEEL.sidebar.slideMs,
       ease: 'Cubic.easeIn',
       onComplete: () => {

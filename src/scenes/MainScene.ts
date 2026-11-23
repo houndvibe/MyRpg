@@ -10,7 +10,7 @@ import { ITEM_IDS, ITEMS } from '../data/items';
 import { canBeMain, addItem, removeItem, run, setMain } from '../state';
 import { canPlace, MASK, type OwnedItem } from '../systems/backpack';
 import { computePower } from '../systems/synergy';
-import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeGear, describeItem, describeOwnedItem, H, stopGameMusic } from '../ui';
+import { addPortrait, addText, Button, C, CATEGORY_COLORS, describeEnemyItem, describeGear, describeItem, describeOwnedItem, H, neighborLinks, stopGameMusic } from '../ui';
 
 export class MainScene extends Phaser.Scene {
   private grid!: GridView<OwnedItem>;
@@ -48,7 +48,11 @@ export class MainScene extends Phaser.Scene {
       mode: 'edit',
       items: () => run.items,
       look: (it) => ({ w: ITEMS[it.id].w, h: ITEMS[it.id].h, label: ITEMS[it.id].name, color: CATEGORY_COLORS[ITEMS[it.id].category], charges: it.charges ?? null, image: itemKey(it.id) }),
-      onHover: (it) => this.setHover(it ? describeOwnedItem(it, computePower(run.items).powers, run.items) : null),
+      onHover: (it) => {
+        const power = computePower(run.items);
+        this.grid.setLinks(it?.uid ?? null, it ? neighborLinks(it.uid, power) : []);
+        this.setHover(it ? describeOwnedItem(it, power.powers, run.items) : null);
+      },
       canPlace: (it, col, row, rotated) => canPlace(run.items, it.id, rotated, col, row, it.uid),
       onPlace: (it, col, row, rotated) => Object.assign(it, { col, row, rotated }),
       onDropOutside: (it) => removeItem(it.uid),
